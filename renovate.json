@@ -1,4 +1,12 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["github>ai-ecoverse/slicc-shared-web"]
+  "extends": ["github>ai-ecoverse/slicc-shared-web"],
+  "packageRules": [
+    {
+      "description": "slicc-kernel-without-embedder is an npm alias of @ai-ecoverse/slicc-kernel pinned at 1.152.2, the last kernel without /dev/embedder, so commands.test.mjs can test an older kernel. Renovate names the alias by depName and the kernel by packageName, so this matches only the alias and the kernel itself still updates.",
+      "matchManagers": ["npm"],
+      "matchDepNames": ["slicc-kernel-without-embedder"],
+      "enabled": false
+    }
+  ]
 }

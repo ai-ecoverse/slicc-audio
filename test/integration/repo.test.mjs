@@ -48,7 +48,26 @@ describe('the repository', () => {
     }
     assert.equal(pkg.engines.node, '>=24');
     assert.equal(pkg.engines['slicc-kernel'], '>=1.153.0');
-    assert.equal(pkg.devDependencies['@ai-ecoverse/slicc-kernel'], '1.153.0');
+    const kernel = pkg.devDependencies['@ai-ecoverse/slicc-kernel'];
+    assert.match(kernel, /^\d+\.\d+\.\d+$/);
+    const floor = pkg.engines['slicc-kernel'].slice(2).split('.').map(Number);
+    const parts = kernel.split('.').map(Number);
+    const order = parts.map((part, i) => part - floor[i]).find((diff) => diff !== 0) ?? 0;
+    assert.ok(order >= 0, kernel);
+    assert.equal(
+      pkg.devDependencies['slicc-kernel-without-embedder'],
+      'npm:@ai-ecoverse/slicc-kernel@1.152.2'
+    );
+  });
+
+  it('keeps Renovate off the pre-embedder kernel alias but not off the kernel', () => {
+    const renovate = JSON.parse(read('renovate.json'));
+    assert.deepEqual(renovate.extends, ['github>ai-ecoverse/slicc-shared-web']);
+    const off = renovate.packageRules.filter((rule) => rule.enabled === false);
+    assert.deepEqual(
+      off.map((rule) => [rule.matchManagers, rule.matchDepNames, rule.matchPackageNames]),
+      [[['npm'], ['slicc-kernel-without-embedder'], undefined]]
+    );
   });
 
   it('publishes to npm from ci.yml through semantic-release, with provenance', () => {
