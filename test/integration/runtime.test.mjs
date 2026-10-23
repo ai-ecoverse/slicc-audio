@@ -30,8 +30,8 @@ describe('the ONNX Runtime behind ortllama', () => {
     assert.equal(typeof mod.startServer, 'function');
     assert.equal(typeof mod.createRuntime, 'function');
     assert.match(mod.onnx, /^\d+\.\d+\.\d+$/);
-    assert.equal(mod.backends.length, 2);
-    assert.equal((await mod.backends[1]({ env: {} })).track, 'web');
+    assert.equal(mod.backends.length, 1);
+    assert.equal((await mod.backends[0]({ env: {} })).track, 'web');
     assert.match(
       fix,
       /^npm install --prefix .+ --no-save --ignore-scripts onnxruntime-node@1\.30\.0$/
