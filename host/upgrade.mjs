@@ -41,7 +41,11 @@ export async function upgrade({ name, env, platform, fds, dir }) {
     const args = windows
       ? ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', file, '-Dir', dir]
       : [file, '--dir', dir];
-    const result = await exec(tool.path, args, { env, stderr: fds[2] });
+    const run = { ...env };
+    if (windows) {
+      for (const key of Object.keys(run)) if (key.toUpperCase() === 'PSMODULEPATH') delete run[key];
+    }
+    const result = await exec(tool.path, args, { env: run, stderr: fds[2] });
     if (result.error) {
       write(fds[2], `${name}: ${tool.file}: ${result.error.message}\n`);
       return 1;

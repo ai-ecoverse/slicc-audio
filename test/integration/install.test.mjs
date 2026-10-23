@@ -3,9 +3,17 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { cpSync, readdirSync } from 'node:fs';
 import { createServer } from 'node:http';
-import { join, resolve } from 'node:path';
+import { delimiter, dirname, join, resolve } from 'node:path';
 import { after, describe, it } from 'node:test';
-import { existsSync, hideNode, mkdirSync, readFileSync, temp, writeFileSync } from './fakes.mjs';
+import {
+  existsSync,
+  hideNode,
+  mkdirSync,
+  onWindows,
+  readFileSync,
+  temp,
+  writeFileSync,
+} from './fakes.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
 const sys = hideNode();
@@ -399,5 +407,158 @@ describe('--upgrade', () => {
     });
     assert.equal(r.code, 1);
     assert.match(r.stderr, /^scplay: could not download http:\/\/127\.0\.0\.1:9\/install\.sh: /);
+  });
+});
+
+describe('install.ps1', () => {
+  const installPs1 = join(root, 'install.ps1');
+  const text = readFileSync(installPs1, 'utf8');
+
+  it('writes the same launchers for every command, passing arguments and exit codes through', () => {
+    for (const line of [
+      "        '$~c~Previous = $env:~V~',",
+      "        '$env:~V~ = ~DIR~',",
+      "        '$~c~Mode = Get-Variable -Name PSNativeCommandArgumentPassing -ValueOnly -ErrorAction SilentlyContinue',",
+      "        '$~c~Legacy = $PSVersionTable.PSVersion.Major -lt 7 -or \"$~c~Mode\" -eq ''Legacy'' -or ($null -eq $~c~Mode -and $PSVersionTable.PSVersion.Major -eq 7 -and $PSVersionTable.PSVersion.Minor -lt 3)',",
+      "        '$~c~Args = @(foreach ($~c~Arg in $args) { foreach ($~c~Item in @($~c~Arg)) {',",
+      "        '  elseif ($~c~Text -eq '''') { ''\"\"'' }',",
+      "        '    $~c~Text = $~c~Text -replace ''(\\\\*)\"'', ''$1$1\\\"''',",
+      "        '$~c~Status = 1',",
+      "        'try {',",
+      "        '  & ~NODE~ ~ENTRY~ @~c~Args',",
+      "        '  $~c~Status = $LASTEXITCODE',",
+      "        '} finally {',",
+      "        '  if ($null -eq $~c~Previous) { Remove-Item -LiteralPath Env:~V~ -ErrorAction SilentlyContinue } else { $env:~V~ = $~c~Previous }',",
+      "        'exit $~c~Status',",
+      '      ) -join "`r`n"), \'~(\\w+)~\', { param($m) $values[$m.Groups[1].Value] })',
+    ]) {
+      assert.ok(text.includes(`${line}\n`), line);
+    }
+    assert.ok(
+      text.includes(
+        '        "`"$(& $escape $Node)`" `"$(& $escape $Entry)`" %* & call :done %%ERRORLEVEL%% & call exit /b %%ERRORLEVEL%%",\n'
+      )
+    );
+    assert.doesNotMatch(text, /^\s+'\(',$/m);
+    assert.doesNotMatch(text, /@args"/);
+    assert.doesNotMatch(text, /Invoke-Expression|\biex\b|cmd(\.exe)? \/c|Start-Process/i);
+  });
+
+  const pwsh = ['pwsh', 'pwsh.exe'].find(
+    (name) => spawnSync(name, ['-NoProfile', '-Command', 'exit 0']).status === 0
+  );
+  it('installs launchers that keep the arguments and leak nothing, in a real pwsh', {
+    skip: (!pwsh && 'pwsh is not installed') || (onWindows && 'windows.test.mjs covers Windows'),
+  }, async () => {
+    const shell = spawnSync(pwsh, ['-NoProfile', '-Command', '(Get-Command pwsh).Source'], {
+      encoding: 'utf8',
+    }).stdout.trim();
+    const env = (extra = {}) => ({
+      HOME: temp('home'),
+      TMPDIR: temp('tmp'),
+      PATH: [dirname(process.execPath), dirname(shell), sys].join(delimiter),
+      ...extra,
+    });
+    const parse = spawnSync(
+      pwsh,
+      [
+        '-NoProfile',
+        '-Command',
+        '$e = $null; [void][System.Management.Automation.Language.Parser]::ParseFile($env:T_PS1, [ref]$null, [ref]$e); if ($e) { $e | ForEach-Object { $_.Message }; exit 1 }',
+      ],
+      { encoding: 'utf8', env: env({ T_PS1: installPs1 }) }
+    );
+    assert.equal(parse.status, 0, parse.stdout);
+    const local = temp('local');
+    const bin = join(local, "my 'bin'");
+    const r = await spawned(
+      pwsh,
+      ['-NoProfile', '-NonInteractive', '-File', installPs1, '-Dir', bin],
+      env({ LOCALAPPDATA: local, SLICC_INSTALL_BASE_URL: plain })
+    );
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(
+      r.stdout,
+      COMMANDS.map((cmd) => `${cmd} 1.3.0 installed to ${join(bin, `${cmd}.ps1`)}\n`).join('')
+    );
+    const entry = (cmd) => join(local, 'slicc-audio', '1.3.0', 'host', `${cmd}.mjs`);
+    const generic = (cmd, ext) =>
+      readFileSync(join(bin, `${cmd}.${ext}`), 'utf8')
+        .replaceAll(cmd, '@')
+        .replaceAll(cmd.toUpperCase(), '@');
+    for (const cmd of COMMANDS) {
+      assert.equal(generic(cmd, 'ps1'), generic('scsay', 'ps1'), cmd);
+      assert.equal(generic(cmd, 'cmd'), generic('scsay', 'cmd'), cmd);
+      assert.deepEqual(
+        [...readFileSync(join(bin, `${cmd}.ps1`)).subarray(0, 3)],
+        [0xef, 0xbb, 0xbf]
+      );
+      const lines = readFileSync(join(bin, `${cmd}.cmd`), 'utf8').split('\r\n');
+      const at = lines.findIndex((line) =>
+        line.endsWith(
+          ` "${entry(cmd)}" %* & call :done %%ERRORLEVEL%% & call exit /b %%ERRORLEVEL%%`
+        )
+      );
+      assert.deepEqual(lines.slice(at + 1), [
+        ':done',
+        'chcp %SLICC_AUDIO_CP% >nul',
+        'exit /b %1',
+        '',
+      ]);
+      const v = await spawned(
+        pwsh,
+        ['-NoProfile', '-File', join(bin, `${cmd}.ps1`), '--version'],
+        env()
+      );
+      assert.equal(v.stdout.trim(), '1.3.0', v.stderr);
+    }
+    const launcher = join(bin, 'scsay.ps1').replaceAll("'", "''");
+    const show =
+      "'dir=' + $(if ($null -eq $env:SCSAY_INSTALL_DIR) { 'unset' } else { $env:SCSAY_INSTALL_DIR })";
+    for (const [before, after] of [
+      ["$env:SCSAY_INSTALL_DIR = 'before'", 'before'],
+      ['Remove-Item Env:SCSAY_INSTALL_DIR -ErrorAction SilentlyContinue', 'unset'],
+    ]) {
+      const session = await spawned(
+        pwsh,
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          `${before}; & '${launcher}' --nope 2>$null; 'code=' + $LASTEXITCODE; ${show}`,
+        ],
+        env()
+      );
+      assert.deepEqual(session.stdout.trim().split(/\r?\n/), ['code=2', `dir=${after}`]);
+    }
+    const argv = join(local, 'argv.mjs');
+    writeFileSync(
+      argv,
+      'process.stdout.write(JSON.stringify([process.env.SCSAY_INSTALL_DIR, ...process.argv.slice(2)]));\n'
+    );
+    const probe = join(local, 'argv.ps1');
+    const ps1 = readFileSync(join(bin, 'scsay.ps1'), 'utf8');
+    assert.ok(ps1.includes(`'${entry('scsay')}'`));
+    writeFileSync(probe, ps1.replace(`'${entry('scsay')}'`, `'${argv}'`));
+    const tricky = ['a )&%^ b "q" c', 'x"y\\', 'sp ace\\', 'tail\\', '', "it's"];
+    for (const mode of [
+      "$PSNativeCommandArgumentPassing = 'Standard'",
+      "$PSNativeCommandArgumentPassing = 'Legacy'",
+      'Remove-Variable PSNativeCommandArgumentPassing',
+    ]) {
+      const passed = await spawned(
+        pwsh,
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          `${mode}; $a = ConvertFrom-Json $env:T_ARGS; & '${probe}' @a; & '${probe}' a,'b c' d`,
+        ],
+        env({ T_ARGS: JSON.stringify(tricky) })
+      );
+      const [all, list] = passed.stdout.split(/(?<=\])(?=\[)/).map((part) => JSON.parse(part));
+      assert.deepEqual(all, [bin, ...tricky], `${mode}: ${passed.stderr}`);
+      assert.deepEqual(list, [bin, 'a', 'b c', 'd'], mode);
+    }
   });
 });

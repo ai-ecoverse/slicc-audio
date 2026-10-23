@@ -17,9 +17,12 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after } from 'node:test';
+import { fakeExe } from './fake-windows.mjs';
 
-export const scratch = mkdtempSync(join(realpathSync(tmpdir()), 'slicc-audio-test-'));
-after(() => rmSync(scratch, { recursive: true, force: true }));
+export const onWindows = process.platform === 'win32';
+export const posix = { skip: onWindows && 'needs POSIX fakes' };
+export const scratch = mkdtempSync(join(realpathSync.native(tmpdir()), 'slicc-audio-test-'));
+after(() => rmSync(scratch, { recursive: true, force: true, maxRetries: 20 }));
 
 export function temp(prefix) {
   return mkdtempSync(join(scratch, `${prefix}-`));
@@ -47,12 +50,13 @@ export function tone(seconds = 0.1, rate = 24000) {
 const FAKE = String.raw`
 const fs = require('node:fs');
 const path = require('node:path');
-const file = path.basename(process.argv[1]);
+const file = globalThis.fakeFile;
 const name = /^(powershell|pwsh)\.exe$/.test(file) ? file : file.replace(/\.exe$/, '');
 const args = process.argv.slice(2);
 const log = process.env.FAKE_LOG;
 const env = {};
 for (const [k, v] of Object.entries(process.env)) if (k.startsWith('SLICC_AUDIO_') || k.endsWith('_INSTALL_DIR')) env[k] = v;
+if (process.env.PSModulePath !== undefined) env.PSModulePath = process.env.PSModulePath;
 let stdin = '';
 const reads = ['say', 'espeak-ng', 'espeak', 'powershell.exe', 'pwsh.exe'].includes(name) && !args.includes('-L') && !args.includes('--voices') && !(args[0] === '-v' && args[1] === '?');
 if (reads && process.env.SLICC_AUDIO_MODE !== 'list') stdin = fs.readFileSync(0, 'utf8');
@@ -88,6 +92,7 @@ if (name === 'say') {
 } else if (name === 'powershell.exe' || name === 'pwsh.exe') {
   if (process.env.SLICC_AUDIO_MODE === 'list') process.stdout.write('Microsoft David Desktop\ten-US\r\nMicrosoft Hazel Desktop\ten-GB\r\n');
   if (process.env.SLICC_AUDIO_OUT) fs.writeFileSync(process.env.SLICC_AUDIO_OUT, wav);
+  if (process.env.FAKE_INSTALLED && args.includes('-File')) process.stdout.write(process.env.FAKE_INSTALLED + '\n');
   done();
 } else if (name === 'ffmpeg') {
   if (args.includes('-list_devices')) {
@@ -145,7 +150,12 @@ export function tools(names) {
   const script = join(dir, '.fake.cjs');
   writeFileSync(script, FAKE);
   for (const name of names) {
-    writeFileSync(join(dir, name), `#!${process.execPath}\nrequire(${JSON.stringify(script)});\n`);
+    const body = `globalThis.fakeFile = ${JSON.stringify(name)};\nrequire(${JSON.stringify(script)});\n`;
+    if (onWindows) {
+      fakeExe(dir, name, body);
+      continue;
+    }
+    writeFileSync(join(dir, name), `#!${process.execPath}\n${body}`);
     chmodSync(join(dir, name), 0o755);
   }
   return dir;
@@ -163,7 +173,10 @@ export function calls(log) {
 export function baseEnv(extra = {}) {
   const env = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (!/^(PATH|Path|SLICC_|OLLAMA_|HF_|XDG_|LANG|LC_ALL|NODE_OPTIONS)/.test(key))
+    if (
+      !/^(PATH|Path|SLICC_|OLLAMA_|HF_|XDG_|LANG|LC_ALL|NODE_OPTIONS)/.test(key) &&
+      key.toUpperCase() !== 'PSMODULEPATH'
+    )
       env[key] = value;
   }
   return {

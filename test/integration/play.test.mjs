@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import { scchime, scplay } from '../../host/play.mjs';
-import { run, temp, tone, writeFileSync } from './fakes.mjs';
+import { fakeServer, posix, run, temp, tone, writeFileSync } from './fakes.mjs';
 
 const root = resolve(import.meta.dirname, '../..');
 const linux = ['paplay', 'pw-play', 'aplay', 'ffplay'];
@@ -16,7 +16,7 @@ function sound() {
 }
 
 describe('scplay', () => {
-  it('passes every afplay option through unchanged on macOS', async () => {
+  it('passes every afplay option through unchanged on macOS', posix, async () => {
     const file = sound();
     const argv = ['-v', '0.5', file, '-t', '2', '-r', '1.5', '-q', '1', '-d', '--leaks'];
     const r = await run(scplay, { platform: 'darwin', argv, names: ['afplay', 'ffplay'] });
@@ -27,7 +27,7 @@ describe('scplay', () => {
     );
   });
 
-  it('tries paplay, pw-play, aplay, then ffplay elsewhere', async () => {
+  it('tries paplay, pw-play, aplay, then ffplay elsewhere', posix, async () => {
     const file = sound();
     for (const [names, used, args] of [
       [linux, 'paplay', [file]],
@@ -46,7 +46,7 @@ describe('scplay', () => {
     }
   });
 
-  it('maps -v and -r, skipping the tools that cannot do them', async () => {
+  it('maps -v and -r, skipping the tools that cannot do them', posix, async () => {
     const file = sound();
     let r = await run(scplay, { argv: ['-v', '0.5', file], names: linux });
     assert.deepEqual(r.calls[0].args, ['--volume=32768', file]);
@@ -86,18 +86,22 @@ describe('scplay', () => {
     );
   });
 
-  it('stops the tool after -t seconds, prints it with -d and ignores -q off macOS', async () => {
-    const file = sound();
-    const started = Date.now();
-    const r = await run(scplay, {
-      argv: ['-t', '0.3', '-d', '-q', '1', file],
-      names: ['paplay'],
-      env: { FAKE_SLEEP_paplay: '20' },
-    });
-    assert.equal(r.code, 0, r.stderr);
-    assert.ok(Date.now() - started < 10000);
-    assert.equal(r.stderr, `scplay: paplay ${file}\n`);
-  });
+  it(
+    'stops the tool after -t seconds, prints it with -d and ignores -q off macOS',
+    posix,
+    async () => {
+      const file = sound();
+      const started = Date.now();
+      const r = await run(scplay, {
+        argv: ['-t', '0.3', '-d', '-q', '1', file],
+        names: ['paplay'],
+        env: { FAKE_SLEEP_paplay: '20' },
+      });
+      assert.equal(r.code, 0, r.stderr);
+      assert.ok(Date.now() - started < 10000);
+      assert.equal(r.stderr, `scplay: paplay ${file}\n`);
+    }
+  );
 
   it('uses powershell.exe, else pwsh.exe, with the path in the environment on Windows', async () => {
     const file = sound();
@@ -125,7 +129,7 @@ describe('scplay', () => {
     assert.equal(r.stderr, 'scplay: no audio player found (tried powershell.exe, pwsh.exe)\n');
   });
 
-  it('exits 1 for a missing file or a failing tool, and 2 for a bad argument', async () => {
+  it('exits 1 for a missing file or a failing tool, and 2 for a bad argument', posix, async () => {
     const file = sound();
     let r = await run(scplay, { argv: ['/no/such.wav'], names: linux });
     assert.deepEqual(
@@ -161,7 +165,7 @@ describe('scplay', () => {
   });
 });
 
-describe('scchime', () => {
+describe('scchime', posix, () => {
   it('plays the chime it synthesizes and deletes it', async () => {
     const r = await run(scchime, { names: linux });
     assert.equal(r.code, 0, r.stderr);
@@ -242,18 +246,55 @@ describe('every host command', () => {
     assert.equal(r.stdout, `${version}\n`);
   });
 
-  it('counts --upgrade and --version only as options, not after -- or as a value', async () => {
-    let r = await run(scplay, { argv: ['--', '--version'], names: ['paplay'] });
-    assert.deepEqual([r.code, r.stderr], [1, 'scplay: cannot open --version: No such file\n']);
-    r = await run(scplay, { argv: ['-v', '1', '--upgrade'] });
-    assert.deepEqual(
-      [r.code, r.stderr.split('\n')[0]],
-      [2, 'scplay: --upgrade takes no other arguments']
-    );
-    r = await run(scchime, { argv: ['--version', '--version'] });
-    assert.deepEqual(
-      [r.code, r.stderr.split('\n')[0]],
-      [2, 'scchime: --version takes no other arguments']
-    );
+  it('runs install.ps1 through powershell.exe without PSModulePath on Windows', async () => {
+    const server = await fakeServer();
+    server.files['/install.ps1'] = 'param($Dir)';
+    const version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version;
+    const dir = 'C:\\Users\\me\\bin';
+    const r = await run(scplay, {
+      platform: 'win32',
+      argv: ['--upgrade'],
+      names: ['powershell.exe', 'pwsh.exe'],
+      env: {
+        SCPLAY_INSTALL_DIR: dir,
+        SLICC_INSTALL_BASE_URL: `${server.url}/files`,
+        PSModulePath: 'C:\\Program Files\\PowerShell\\7\\Modules',
+        FAKE_INSTALLED: 'scplay 99.2.0 installed to x',
+      },
+    });
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(r.stdout, `scplay: ${version} → 99.2.0\n`);
+    const [call] = r.calls;
+    assert.equal(call.name, 'powershell.exe');
+    assert.deepEqual(call.args.slice(0, 5), [
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+    ]);
+    assert.match(call.args[5], /install\.ps1$/);
+    assert.deepEqual(call.args.slice(6), ['-Dir', dir]);
+    assert.equal(call.env.SCPLAY_INSTALL_DIR, undefined);
+    assert.equal(call.env.PSModulePath, undefined);
   });
+
+  it(
+    'counts --upgrade and --version only as options, not after -- or as a value',
+    posix,
+    async () => {
+      let r = await run(scplay, { argv: ['--', '--version'], names: ['paplay'] });
+      assert.deepEqual([r.code, r.stderr], [1, 'scplay: cannot open --version: No such file\n']);
+      r = await run(scplay, { argv: ['-v', '1', '--upgrade'] });
+      assert.deepEqual(
+        [r.code, r.stderr.split('\n')[0]],
+        [2, 'scplay: --upgrade takes no other arguments']
+      );
+      r = await run(scchime, { argv: ['--version', '--version'] });
+      assert.deepEqual(
+        [r.code, r.stderr.split('\n')[0]],
+        [2, 'scchime: --version takes no other arguments']
+      );
+    }
+  );
 });

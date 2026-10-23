@@ -20,7 +20,8 @@ describe('the repository', () => {
     const ci = read('.github/workflows/ci.yml');
     const uses = [...ci.matchAll(/^\s*uses:\s*(\S+)\s*$/gm)].map((match) => match[1]);
     const version = pkg.devDependencies['@ai-ecoverse/slicc-shared-web'];
-    assert.match(version, /^2\.\d+\.\d+$/);
+    const [major, minor] = version.split('.').map(Number);
+    assert.ok(major === 2 && minor >= 12, 'windows-test needs slicc-shared-web 2.12.0 or later');
     assert.deepEqual(uses, [
       `ai-ecoverse/slicc-shared-web/.github/workflows/pipeline.yml@v${version}`,
     ]);
@@ -40,6 +41,11 @@ describe('the repository', () => {
     assert.match(ci, /cancel-in-progress: \$\{\{ github\.event_name == 'pull_request' \}\}/);
     const glob = /^\s*test-glob:\s*(\S+)$/m.exec(ci)?.[1];
     assert.ok(glob && pkg.scripts.test.endsWith(` ${glob}`), pkg.scripts.test);
+    assert.match(ci, /^ {6}windows-test: npm run test:windows$/m);
+    assert.match(
+      pkg.scripts['test:windows'],
+      /^node --test --test-concurrency=1 .* test\/integration\/windows\.test\.mjs$/
+    );
   });
 
   it('pins every devDependency exactly', () => {

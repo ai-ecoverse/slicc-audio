@@ -2,7 +2,15 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { beforeEach, describe, it } from 'node:test';
 import { scsay } from '../../host/say.mjs';
-import { fakeServer, missingModule, readFileSync, run, temp, writeFileSync } from './fakes.mjs';
+import {
+  fakeServer,
+  missingModule,
+  posix,
+  readFileSync,
+  run,
+  temp,
+  writeFileSync,
+} from './fakes.mjs';
 
 const unix = ['spd-say', 'espeak-ng', 'espeak', 'paplay'];
 const USAGE =
@@ -24,7 +32,7 @@ function voicesOf(names) {
   }));
 }
 
-describe('scsay on macOS', () => {
+describe('scsay on macOS', posix, () => {
   it('hands the text to say on stdin, with -r as words per minute and -l as a voice', async () => {
     const r = await run(scsay, {
       platform: 'darwin',
@@ -139,7 +147,7 @@ describe('scsay on macOS', () => {
   });
 });
 
-describe('scsay on Linux', () => {
+describe('scsay on Linux', posix, () => {
   it('prefers spd-say, with the text after --, then espeak-ng and espeak on stdin', async () => {
     let r = await run(scsay, { argv: ['-r', '2', '-v', 'span', 'hola'], names: unix });
     assert.deepEqual(
@@ -379,7 +387,7 @@ describe('scsay on Windows', () => {
   });
 });
 
-describe('scsay engines', () => {
+describe('scsay engines', posix, () => {
   it('falls back to slicc-ortllama, then Ollama, then lists every engine', async () => {
     server.models.ortllama = ['speech'];
     let r = await run(scsay, {
