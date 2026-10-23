@@ -91,6 +91,14 @@ export function fakeBrowser(options = {}) {
     }
     resume() {
       if (o.hangResume) return new Promise(() => {});
+      if (o.slowResume) {
+        return new Promise((resolve) =>
+          setTimeout(() => {
+            this.state = 'running';
+            resolve();
+          }, o.slowResume)
+        );
+      }
       if (!o.blocked) this.state = 'running';
       return Promise.resolve();
     }
@@ -245,6 +253,7 @@ export function fakeBrowser(options = {}) {
       return !o.noOpus && type === 'audio/webm;codecs=opus';
     }
     constructor(stream, init) {
+      if (o.recorderError) throw new DOMException('no recorder', o.recorderError);
       this.stream = stream;
       this.init = init;
       this.state = 'inactive';
@@ -278,6 +287,7 @@ export function fakeBrowser(options = {}) {
       async getUserMedia(constraints) {
         log.push(['getUserMedia', JSON.stringify(constraints)]);
         if (o.micError) throw new DOMException('denied', o.micError);
+        if (o.micDelay) await new Promise((resolve) => setTimeout(resolve, o.micDelay));
         const track = {
           stop() {
             log.push(['track stop']);

@@ -2,8 +2,9 @@ import { appendFileSync, existsSync, readdirSync, readFileSync, rmSync } from 'n
 import { join, posix, resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '..');
-const traces = join(root, 'coverage/sh');
-const lcov = join(root, 'coverage/unit/lcov.info');
+const out = join(root, process.env.SLICC_UNIT_COVERAGE_DIR ?? 'coverage/unit');
+const traces = `${out}-sh`;
+const lcov = join(out, 'lcov.info');
 const skip = [
   /^\s*$/,
   /^#!/,
@@ -55,5 +56,5 @@ for (const file of files) {
   );
 }
 if (existsSync(lcov)) appendFileSync(lcov, text);
-else console.log('cover-sh: no coverage/unit/lcov.info to append to');
+else console.log(`cover-sh: no ${lcov} to append to`);
 console.log(`cover-sh: ${missed} lines missed`);

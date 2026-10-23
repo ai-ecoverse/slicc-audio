@@ -377,6 +377,27 @@ describe('say', () => {
     });
   });
 
+  it('keeps an existing file, and leaves no partial one, when the page fails', async () => {
+    world.fail = { error: named('Error', 'ortllama: model not cached') };
+    assert.deepEqual(
+      await sh(
+        'printf OLD > /tmp/prev.wav; say -o /tmp/prev.wav secret; cat /tmp/prev.wav; for f in /tmp/.prev*; do test -e "$f" && echo left; done; true'
+      ),
+      { status: 0, stdout: 'OLD', stderr: 'say: ortllama: model not cached\n' }
+    );
+    world.fail = undefined;
+    assert.deepEqual(await sh('say -o /tmp/prev.wav hi && cat /tmp/prev.wav'), {
+      status: 0,
+      stdout: 'AUDIO',
+      stderr: '',
+    });
+    assert.deepEqual(await sh('cd /tmp && say -o here.wav hi && cat here.wav'), {
+      status: 0,
+      stdout: 'AUDIO',
+      stderr: '',
+    });
+  });
+
   it('removes the file when the page fails', async () => {
     world.fail = { error: named('Error', 'ortllama: model not cached') };
     assert.deepEqual(await sh('say -o /tmp/f.wav secret; test -e /tmp/f.wav'), {
@@ -457,6 +478,15 @@ describe('say', () => {
       stdout: '',
       stderr: "say: hf not found; run: hf download k --include 'voices/*'\n",
     });
+    world.warm = 'touch /tmp/pwned x\ntouch\n/tmp/pwned\nx\n';
+    assert.deepEqual(await sh('say --warmup; echo $?; test -e /tmp/pwned && echo ran; true'), {
+      status: 0,
+      stdout: '1\n',
+      stderr: 'say: ortllama: touch /tmp/pwned x\n',
+    });
+    world.warm = 'hf login\nhf\nlogin\n';
+    assert.equal((await sh('hear --warmup')).stderr, 'hear: ortllama: hf login\n');
+    world.warm = "hf download k --include 'voices/*'\nhf\ndownload\nk\n--include\nvoices/*\n";
     const fake =
       'mkdir -p /usr/local/bin && printf \'#!/bin/sh\\nfor a; do echo "[$a]"; done\\nexit $HF_EXIT\\n\' > /usr/local/bin/hf && chmod +x /usr/local/bin/hf';
     assert.equal((await sh(fake)).status, 0);

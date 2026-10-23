@@ -347,9 +347,15 @@ elif [ -n "$inter" ]; then
 fi
 h="$h}"
 if [ -n "$out" ] && [ "$out" != - ]; then
-  { command exec 7>"$out"; } 2>/dev/null || die "cannot write $out"
-  trap 'rm -f "$out"; cleanup' EXIT
+  case $out in
+    */*) part=${out%/*}/.${out##*/}.$$ ;;
+    *) part=.$out.$$ ;;
+  esac
+  { command exec 7>"$part"; } 2>/dev/null || die "cannot write $out"
+  trap 'rm -f "$part"; cleanup' EXIT
   ask "$h" <"$body" >&7
+  exec 7>&-
+  mv -f "$part" "$out" || die "cannot write $out"
   trap cleanup EXIT
 else
   ask "$h" <"$body"

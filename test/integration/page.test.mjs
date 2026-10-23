@@ -523,6 +523,18 @@ describe('audio.say', () => {
       'NotSupportedError'
     );
   });
+
+  it('never hands back a 404 message that is not an hf download command', async () => {
+    const odd = fakeServer({ models: [] });
+    const p = page({ server: odd });
+    p.scope.fetch = async (url, init) =>
+      new URL(url).pathname === '/v1/audio/speech'
+        ? Response.json({ error: { message: 'touch /tmp/pwned' } }, { status: 404 })
+        : odd.fetch(url, init);
+    await assert.rejects(p.ask('audio.say', { warmup: true }), {
+      message: 'ortllama: touch /tmp/pwned',
+    });
+  });
 });
 
 describe('audio.voices', () => {
@@ -553,6 +565,34 @@ describe('audio.voices', () => {
 });
 
 describe('audio.record', () => {
+  it('never starts recording when the signal aborts before or while it sets up', async () => {
+    const before = page();
+    const gone = new AbortController();
+    gone.abort();
+    assert.equal(await before.text('audio.record', {}, undefined, gone.signal), '');
+    assert.ok(!before.log.some(([what]) => what === 'record'));
+    assert.ok(before.log.some(([what]) => what === 'track stop'));
+    const mic = page({ micDelay: 30 });
+    const during = new AbortController();
+    setTimeout(() => during.abort(), 5);
+    assert.equal(await mic.text('audio.record', {}, undefined, during.signal), '');
+    assert.ok(!mic.log.some(([what]) => what === 'record'));
+    assert.ok(mic.log.some(([what]) => what === 'track stop'));
+    const slow = page({ suspended: true, slowResume: 15 }, { wait: 200 });
+    const late = new AbortController();
+    setTimeout(() => late.abort(), 5);
+    assert.equal(await slow.text('audio.record', {}, undefined, late.signal), '');
+    assert.ok(!slow.log.some(([what]) => what === 'record'));
+    assert.ok(slow.log.some(([what]) => what === 'track stop'));
+    assert.deepEqual(slow.log.at(-1), ['close']);
+  });
+
+  it('stops the microphone when MediaRecorder refuses the stream', async () => {
+    const p = page({ recorderError: 'NotSupportedError' });
+    await refusal(p.ask('audio.record', {}), 'NotSupportedError', 'no recorder');
+    assert.deepEqual(p.log.at(-1), ['track stop']);
+  });
+
   it('lists the microphones', async () => {
     assert.equal(
       await page().text('audio.record', { devices: true }),

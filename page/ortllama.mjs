@@ -78,7 +78,9 @@ export function ortllamaOf({ scope, base }) {
     const state = await readiness(role, model);
     if (state.ready) return `ortllama: ready (${state.ready})\n`;
     if (state.why) throw named('NotSupportedError', `ortllama: ${state.why}`);
-    return `${state.missing}\n${words(state.missing).join('\n')}\n`;
+    const argv = words(state.missing);
+    if (argv[0] !== 'hf' || argv[1] !== 'download') throw new Error(`ortllama: ${state.missing}`);
+    return `${state.missing}\n${argv.join('\n')}\n`;
   }
 
   async function kokoroVoices(model) {

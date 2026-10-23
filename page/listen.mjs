@@ -97,16 +97,31 @@ export function listenOf({ scope, silence, tick, threshold }, { context }) {
     }
   }
 
+  const release = (stream) => {
+    for (const track of stream.getTracks()) track.stop();
+  };
+
   async function capture(stream, options, signal, push) {
     const type = 'audio/webm;codecs=opus';
-    const recorder = new scope.MediaRecorder(
-      stream,
-      scope.MediaRecorder.isTypeSupported?.(type) ? { mimeType: type } : undefined
-    );
-    const ctx = await context().catch((error) => {
-      for (const track of stream.getTracks()) track.stop();
+    let recorder;
+    let ctx;
+    try {
+      if (signal.aborted) return;
+      recorder = new scope.MediaRecorder(
+        stream,
+        scope.MediaRecorder.isTypeSupported?.(type) ? { mimeType: type } : undefined
+      );
+      ctx = await context();
+    } catch (error) {
+      release(stream);
       throw error;
-    });
+    } finally {
+      if (signal.aborted) {
+        release(stream);
+        await ctx?.close();
+      }
+    }
+    if (signal.aborted) return;
     const analyser = ctx.createAnalyser();
     analyser.fftSize = 2048;
     ctx.createMediaStreamSource(stream).connect(analyser);
@@ -157,7 +172,7 @@ export function listenOf({ scope, silence, tick, threshold }, { context }) {
       clearInterval(meter);
       clearTimeout(timer);
       signal.removeEventListener('abort', stop);
-      for (const track of stream.getTracks()) track.stop();
+      release(stream);
       await ctx.close();
     }
   }

@@ -242,9 +242,13 @@ warm() {
   done <<EOF
 ${reply#*"$nl"}
 EOF
+  if [ "$#" -lt 3 ] || [ "$1" != hf ] || [ "$2" != download ]; then
+    die "ortllama: $shown"
+  fi
+  shift
   if ! command -v hf >/dev/null 2>&1; then
     die "hf not found; run: $shown"
   fi
-  "$@" >&2 </dev/null || exit 1
+  hf "$@" >&2 </dev/null || exit 1
   exit 0
 }
