@@ -43,6 +43,7 @@ page.answer = async (call) => {
   if (options.status) return kind === 'audio.say' ? world.say : world.hear;
   if (options.warmup) return world.warm;
   if (world.hang) {
+    world.held = kind;
     await new Promise((resolve) => call.signal.addEventListener('abort', resolve));
     world.aborted = call.signal.reason?.message;
     return '';
@@ -883,29 +884,34 @@ describe('errors from /dev/embedder', () => {
       for (let i = 0; i < 100 && !world.aborted; i++) await new Promise((r) => setTimeout(r, 20));
       return world.aborted;
     };
-    for (const script of [
-      'timeout 3 afplay /tmp/clip.wav',
-      'timeout 3 say hi',
-      'timeout 3 hear',
-      'timeout 3 hear -i /tmp/clip.wav',
-    ]) {
+    const killed = async (script, kind, signal) => {
       world.aborted = undefined;
-      const result = await sh(`${script}; echo $?; ls -d /tmp/tmp.* 2>/dev/null | wc -l`);
-      assert.equal(result.stdout, '124\n0\n', script);
+      world.held = undefined;
+      const run = os.sh(`${script} & echo $! > /tmp/held.pid; wait $!; echo $?`);
+      for (let i = 0; i < 1500 && world.held !== kind; i++)
+        await new Promise((r) => setTimeout(r, 20));
+      assert.equal(world.held, kind, script);
+      await os.sh(`kill -${signal} $(cat /tmp/held.pid)`);
+      return (await run).stdout;
+    };
+    for (const [script, kind] of [
+      ['timeout 600 afplay /tmp/clip.wav', 'audio.play'],
+      ['timeout 600 say hi', 'audio.say'],
+      ['timeout 600 hear', 'audio.record'],
+      ['timeout 600 hear -i /tmp/clip.wav', 'audio.transcribe'],
+    ]) {
+      assert.equal(await killed(script, kind, 'ALRM'), '124\n', script);
       assert.ok(['closed', 'interrupted'].includes(await settled()), `${script}: ${world.aborted}`);
+      assert.equal((await os.sh('ls -d /tmp/tmp.* 2>/dev/null | wc -l')).stdout, '0\n', script);
     }
     for (const [signal, code] of [
       ['TERM', 143],
       ['HUP', 129],
     ]) {
-      world.aborted = undefined;
-      const result = await sh(`chime & p=$!; sleep 2; kill -${signal} $p; wait $p; echo $?`);
-      assert.equal(result.stdout, `${code}\n`);
+      assert.equal(await killed('chime', 'audio.play', signal), `${code}\n`);
       assert.equal(await settled(), 'interrupted');
     }
-    world.aborted = undefined;
-    const record = await sh('hear --engine ortllama & p=$!; sleep 2; kill $p; wait $p; echo $?');
-    assert.equal(record.stdout, '143\n');
+    assert.equal(await killed('hear --engine ortllama', 'audio.record', 'TERM'), '143\n');
     assert.ok(await settled());
   });
 });
