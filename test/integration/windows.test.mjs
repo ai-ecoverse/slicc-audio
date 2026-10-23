@@ -111,6 +111,7 @@ describe('on real Windows', { skip: !onWindows && 'not Windows' }, () => {
     delete pkg.scripts;
     delete pkg.optionalDependencies;
     writeFileSync(join(source, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`);
+    copyFileSync(installPs1, join(dir, 'install.ps1'));
     const pack = npm(['pack', '--ignore-scripts', '--pack-destination', dir], source);
     assert.equal(pack.status, 0, `${pack.stdout}${pack.stderr}${pack.error?.message ?? ''}`);
     const assets = spawnSync(process.execPath, [join(root, 'scripts', 'assets.mjs'), dir, as], {
@@ -444,7 +445,7 @@ describe('on real Windows', { skip: !onWindows && 'not Windows' }, () => {
   });
 
   for (const shell of ['powershell.exe', 'pwsh']) {
-    it(`lists the voices and plays a WAV through the real ${shell}`, async (t) => {
+    it(`lists the voices, and plays a WAV when there is an audio device, through the real ${shell}`, async (t) => {
       const exe =
         shell === 'pwsh'
           ? pwsh &&
@@ -466,7 +467,17 @@ describe('on real Windows', { skip: !onWindows && 'not Windows' }, () => {
         assert.equal(voices.status, 0, voices.stderr);
         assert.match(voices.stdout, /^Microsoft \S+.* \([a-z]{2}-[A-Z]{2}\) \[platform\]/m);
       }
+      const devices = spawnSync(
+        powershell,
+        ['-NoProfile', '-NonInteractive', '-Command', '@(Get-CimInstance Win32_SoundDevice).Count'],
+        { encoding: 'utf8' }
+      );
       const played = await run(process.execPath, [join(root, 'host', 'scchime.mjs')], { env });
+      if (devices.stdout.trim() === '0') {
+        t.diagnostic(`no audio device, ${shell} exited ${played.status}: ${played.stderr}`);
+        t.skip('no audio device on this machine');
+        return;
+      }
       assert.equal(played.status, 0, `${shell}: ${played.stderr}`);
     });
   }

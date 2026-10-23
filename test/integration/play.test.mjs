@@ -118,6 +118,11 @@ describe('scplay', () => {
       assert.ok(!call.args.includes(file));
       const script = Buffer.from(call.args[3], 'base64').toString('utf16le');
       assert.match(script, /System\.Windows\.Media\.MediaPlayer/);
+      assert.match(script, /add_MediaFailed/);
+      assert.match(
+        script,
+        /\$pump\.Invoke\(\[Action\]\{\}, \[System\.Windows\.Threading\.DispatcherPriority\]::Background\)/
+      );
       assert.deepEqual(call.env, {
         SLICC_AUDIO_CACHE: r.env.SLICC_AUDIO_CACHE,
         SLICC_AUDIO_FILE: file,
