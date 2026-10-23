@@ -55,6 +55,6 @@
     "semantic-release": "25.0.9"
   },
   "optionalDependencies": {
-    "@ai-ecoverse/slicc-ortllama": "^1.27.0"
+    "@ai-ecoverse/slicc-ortllama": "^1.28.0"
   }
 }

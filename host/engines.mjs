@@ -12,15 +12,13 @@ export class Unavailable extends Error {
 const ORTLLAMA = '@ai-ecoverse/slicc-ortllama';
 
 export async function loadOrtllama() {
-  const mod = await import(ORTLLAMA);
+  const [mod, node] = await Promise.all([import(ORTLLAMA), import(`${ORTLLAMA}/ort/node`)]);
   const index = import.meta.resolve(ORTLLAMA);
   const manifest = JSON.parse(readFileSync(new URL('../package.json', index), 'utf8'));
-  const backend = (path) => async (options) =>
-    (await import(new URL(path, index))).loadBackend(options);
   return {
     startServer: mod.startServer,
     createRuntime: mod.createRuntime,
-    backends: [backend('./ort/node.js'), backend('./ort/web.js')],
+    backends: [(options) => node.loadBackend({ ...options, notice() {} })],
     onnx: manifest.peerDependencies?.['onnxruntime-node'],
   };
 }
