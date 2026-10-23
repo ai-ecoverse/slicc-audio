@@ -8,6 +8,7 @@ import {
   rmSync,
 } from 'node:fs';
 import { join } from 'node:path';
+import { pipeline } from 'node:stream/promises';
 import { cacheDir, exec, Failure, failed, first, write } from './common.mjs';
 import { Unavailable } from './engines.mjs';
 
@@ -92,22 +93,30 @@ export async function download({ name, file, model, env, fds }) {
   const part = `${file}.part`;
   const total = Number(res.headers.get('content-length')) || 0;
   const hash = createHash('sha256');
-  const out = createWriteStream(part);
   let size = 0;
   let shown = -1;
   try {
-    for await (const chunk of res.body) {
-      hash.update(chunk);
-      size += chunk.length;
-      if (!out.write(chunk)) await new Promise((resolve) => out.once('drain', resolve));
-      const pct = total ? Math.floor((size * 100) / total) : -1;
-      if (pct !== shown && pct % 10 === 0) {
-        shown = pct;
-        write(fds[2], `${name}: downloading ${model}: ${pct}%\n`);
-      }
-    }
-  } finally {
-    await new Promise((resolve) => out.end(resolve));
+    await pipeline(
+      res.body,
+      async function* (source) {
+        for await (const chunk of source) {
+          hash.update(chunk);
+          size += chunk.length;
+          const pct = total ? Math.floor((size * 100) / total) : -1;
+          if (pct !== shown && pct % 10 === 0) {
+            shown = pct;
+            write(fds[2], `${name}: downloading ${model}: ${pct}%\n`);
+          }
+          yield chunk;
+        }
+      },
+      createWriteStream(part)
+    );
+  } catch (error) {
+    try {
+      rmSync(part, { force: true });
+    } catch {}
+    throw new Failure(`cannot download ${url}: ${error.cause?.message ?? error.message}`);
   }
   const digest = hash.digest('hex');
   if (!etag || digest !== etag.toLowerCase()) {

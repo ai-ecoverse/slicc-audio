@@ -174,6 +174,22 @@ describe('schear with whisper.cpp', () => {
     });
     assert.equal(r.code, 1);
     assert.match(r.stderr, /^schear: cannot download http:\/\/127\.0\.0\.1:9\/.*: /);
+    server.models.hf = { 'ggml-base.bin': { data: model, cut: 4 } };
+    r = await run(schear, {
+      argv: ['-i', file],
+      names: whisper,
+      env: { ...hf(), SLICC_AUDIO_CACHE: cache },
+    });
+    assert.deepEqual(
+      [r.code, r.stderr],
+      [
+        1,
+        `schear: cannot download ${server.url}/hf/ggerganov/whisper.cpp/resolve/main/ggml-base.bin: other side closed\n`,
+      ]
+    );
+    assert.ok(!existsSync(join(cache, 'ggml-base.bin')));
+    assert.ok(!existsSync(join(cache, 'ggml-base.bin.part')));
+    assert.deepEqual(r.calls, []);
     const own = join(temp('own'), 'mine.bin');
     writeFileSync(own, model);
     r = await run(schear, { argv: ['-i', file, '--model', own], names: whisper });
