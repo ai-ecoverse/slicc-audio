@@ -1,0 +1,5 @@
+#!/bin/sh
+me=afplay
+lib=${0%/*}/../sh
+. "$lib/common.sh"
+. "$lib/afplay.sh"

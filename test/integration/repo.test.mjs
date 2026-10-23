@@ -44,9 +44,11 @@ describe('the repository', () => {
 
   it('pins every devDependency exactly', () => {
     for (const [name, version] of Object.entries(pkg.devDependencies)) {
-      assert.match(version, /^\d+\.\d+\.\d+(-[\w.]+)?$/, name);
+      assert.match(version, /^(npm:@ai-ecoverse\/[\w.-]+@)?\d+\.\d+\.\d+(-[\w.]+)?$/, name);
     }
     assert.equal(pkg.engines.node, '>=24');
+    assert.equal(pkg.engines['slicc-kernel'], '>=1.153.0');
+    assert.equal(pkg.devDependencies['@ai-ecoverse/slicc-kernel'], '1.153.0');
   });
 
   it('publishes to npm from ci.yml through semantic-release, with provenance', () => {
@@ -105,6 +107,21 @@ describe('the repository', () => {
     assert.deepEqual(Object.keys(pkg.optionalDependencies), ['@ai-ecoverse/slicc-ortllama']);
     for (const path of Object.values(pkg.bin))
       assert.ok(read(path).startsWith('#!/usr/bin/env node\n'));
+  });
+
+  it('ships the SLICC commands as sh scripts, and the page module as ./page', () => {
+    const names = ['say', 'scsay', 'hear', 'schear', 'afplay', 'scplay', 'chime', 'scchime'];
+    assert.deepEqual(Object.keys(pkg.slicc.commands), names);
+    for (const name of names) {
+      const { script } = pkg.slicc.commands[name];
+      assert.equal(script, `bin/${name}`);
+      assert.ok(read(script).startsWith('#!/bin/sh\n'), name);
+    }
+    assert.deepEqual(pkg.exports, {
+      './page': './page/index.mjs',
+      './package.json': './package.json',
+    });
+    assert.match(pkg.scripts.lint, /sh scripts\/lint-sh\.sh/);
   });
 
   it('fails closed when the shared hooks are missing', () => {
