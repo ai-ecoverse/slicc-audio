@@ -274,6 +274,13 @@ export async function fakeServer() {
       }
       if (tier === 'blob') {
         const blob = state.models.hf?.[route.slice(1)];
+        if (blob.cut !== undefined) {
+          res.writeHead(200, {
+            'content-type': 'application/octet-stream',
+            'content-length': blob.data.length,
+          });
+          return res.write(blob.data.subarray(0, blob.cut), () => res.destroy());
+        }
         return send(200, blob.data, 'application/octet-stream', {
           'content-length': blob.data.length,
         });
