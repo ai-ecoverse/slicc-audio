@@ -278,6 +278,18 @@ export async function fakeServer() {
           'content-length': blob.data.length,
         });
       }
+      if (tier === 'bare') {
+        if (route === '/v1/models')
+          return send(200, {
+            object: 'list',
+            data: state.models.ortllama.map((id) => ({ id, object: 'model' })),
+          });
+        return send(500, {
+          error: {
+            message: 'ortllama on Node needs onnxruntime-node: npm install onnxruntime-node',
+          },
+        });
+      }
       if (!state.models[tier])
         return send(404, { error: { message: `no route for ${url.pathname}` } });
       if (route === '/v1/models')
@@ -336,9 +348,16 @@ export async function fakeServer() {
     server.close();
   });
   state.url = url;
+  state.backends = [async () => ({ track: 'node' })];
+  state.runtimes = [];
   state.ortllama = async () => ({
+    onnx: '1.30.0',
+    backends: state.backends,
+    createRuntime: ({ backend }) => ({ backend }),
     startServer: async (options) => {
       state.started.push({ port: options.port, host: options.host });
+      if (!options.runtime) return { url: `${url}/bare`, close: async () => state.closed++ };
+      state.runtimes.push((await options.runtime.backend()).track);
       return { url: `${url}/ortllama`, close: async () => state.closed++ };
     },
   });
@@ -349,6 +368,8 @@ export async function fakeServer() {
     state.models = { ortllama: [], ollama: [] };
     state.answer = {};
     state.voices = [];
+    state.backends = [async () => ({ track: 'node' })];
+    state.runtimes = [];
   };
   return state;
 }

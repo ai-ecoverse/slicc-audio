@@ -17,7 +17,6 @@ import {
   checked,
   kokoroVoice,
   listed,
-  loadModule,
   loadOrtllama,
   matchVoice,
   models,
@@ -25,6 +24,7 @@ import {
   ollamaBase,
   ortllamaMissing,
   ortllamaStatus,
+  ortllamaTools,
   ortllamaVoices,
   speech,
   status,
@@ -467,7 +467,7 @@ const engines = {
       }
     },
     async tools(ctx) {
-      await loadModule(ctx.ortllama);
+      await ortllamaTools(ctx.ortllama, ctx.env);
     },
     async warmup(ctx) {
       const state = await withOrtllama(ctx.ortllama, ctx.env, (base) => ortllamaState(ctx, base));
