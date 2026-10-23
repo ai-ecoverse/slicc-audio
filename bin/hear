@@ -1,0 +1,5 @@
+#!/bin/sh
+me=hear
+lib=${0%/*}/../sh
+. "$lib/common.sh"
+. "$lib/hear.sh"

@@ -1,0 +1,5 @@
+#!/bin/sh
+me=scchime
+lib=${0%/*}/../sh
+. "$lib/common.sh"
+. "$lib/chime.sh"
