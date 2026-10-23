@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { describe, it } from 'node:test';
 import { scchime, scplay } from '../../host/play.mjs';
@@ -209,38 +209,51 @@ describe('scchime', () => {
 });
 
 describe('every host command', () => {
-  const version = JSON.parse(
-    spawnSync('node', ['-p', 'JSON.stringify(require("./package.json"))'], {
-      cwd: root,
-      encoding: 'utf8',
-    }).stdout
-  ).version;
-
-  it('prints its version, and the npm command for --upgrade when npm installed it', () => {
+  it('prints its version alone, and the npm command for --upgrade when npm installed it', () => {
+    const version = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).version;
+    const env = { ...process.env };
+    for (const name of ['scsay', 'schear', 'scplay', 'scchime'])
+      delete env[`${name.toUpperCase()}_INSTALL_DIR`];
     for (const name of ['scsay', 'schear', 'scplay', 'scchime']) {
-      let r = spawnSync(process.execPath, [join(root, 'host', `${name}.mjs`), '--version'], {
-        encoding: 'utf8',
-      });
-      assert.deepEqual([r.status, r.stdout, r.stderr], [0, `${name} ${version}\n`, '']);
-      r = spawnSync(process.execPath, [join(root, 'host', `${name}.mjs`), '--upgrade'], {
-        encoding: 'utf8',
-      });
+      const bin = join(root, 'host', `${name}.mjs`);
+      let r = spawnSync(process.execPath, [bin, '--version'], { env, encoding: 'utf8' });
+      assert.deepEqual([r.status, r.stdout, r.stderr], [0, `${version}\n`, '']);
+      r = spawnSync(process.execPath, [bin, '--upgrade'], { env, encoding: 'utf8' });
       assert.deepEqual(
         [r.status, r.stdout],
         [0, 'npm install -g @ai-ecoverse/slicc-audio@latest\n']
       );
-      r = spawnSync(process.execPath, [join(root, 'host', `${name}.mjs`), '--upgrade', 'now'], {
-        encoding: 'utf8',
-      });
-      assert.equal(r.status, 2);
+      for (const flag of ['--upgrade', '--version']) {
+        r = spawnSync(process.execPath, [bin, flag, '--help-me'], { env, encoding: 'utf8' });
+        assert.equal(r.status, 2);
+        r = spawnSync(process.execPath, [bin, '-h', flag], { env, encoding: 'utf8' });
+        assert.equal(r.status, 0);
+      }
+      r = spawnSync(process.execPath, [bin, '--upgrade', '--upgrade'], { env, encoding: 'utf8' });
       assert.match(
         r.stderr,
         new RegExp(`^${name}: --upgrade takes no other arguments\nusage: ${name}`)
       );
     }
     const r = spawnSync(process.execPath, [join(root, 'host', 'schear.mjs'), '-v'], {
+      env,
       encoding: 'utf8',
     });
-    assert.equal(r.stdout, `schear ${version}\n`);
+    assert.equal(r.stdout, `${version}\n`);
+  });
+
+  it('counts --upgrade and --version only as options, not after -- or as a value', async () => {
+    let r = await run(scplay, { argv: ['--', '--version'], names: ['paplay'] });
+    assert.deepEqual([r.code, r.stderr], [1, 'scplay: cannot open --version: No such file\n']);
+    r = await run(scplay, { argv: ['-v', '1', '--upgrade'] });
+    assert.deepEqual(
+      [r.code, r.stderr.split('\n')[0]],
+      [2, 'scplay: --upgrade takes no other arguments']
+    );
+    r = await run(scchime, { argv: ['--version', '--version'] });
+    assert.deepEqual(
+      [r.code, r.stderr.split('\n')[0]],
+      [2, 'scchime: --version takes no other arguments']
+    );
   });
 });

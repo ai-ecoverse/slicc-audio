@@ -12,7 +12,7 @@ import {
   unsupported,
   write,
 } from './common.mjs';
-import { meta } from './upgrade.mjs';
+import { meta, metaFlags, noMeta } from './upgrade.mjs';
 import { chime } from './wav.mjs';
 
 const PLAY_PS = [
@@ -134,13 +134,14 @@ export async function scplay({ name = 'scplay', argv, env, platform, fds }) {
   const usage = `usage: ${name} [-v volume] [-t time] [-r rate] [-q quality] [-d] file\n`;
   try {
     const m = await meta({ name, argv, env, platform, fds });
-    if (m?.usage) throw new UsageError(m.usage);
-    if (m) return m.code;
-    const { opts, rest } = parseArgs(argv, PLAY_SPEC);
+    if (m.code !== undefined) return m.code;
+    env = m.env;
+    const { opts, order, rest } = parseArgs(argv, [...PLAY_SPEC, metaFlags()]);
     if (opts.help) {
       write(fds[1], usage);
       return 0;
     }
+    noMeta(opts, order);
     if (opts.leaks && platform !== 'darwin') throw unsupported('--leaks', platform);
     const options = {
       volume: opts.volume === undefined ? 1 : number('-v', opts.volume, 0, 1),
@@ -165,13 +166,17 @@ export async function scchime({ name = 'scchime', argv, env, platform, fds }) {
   const usage = `usage: ${name}\n`;
   try {
     const m = await meta({ name, argv, env, platform, fds });
-    if (m?.usage) throw new UsageError(m.usage);
-    if (m) return m.code;
-    const { opts, rest } = parseArgs(argv, [{ flags: ['-h', '--help'], key: 'help' }]);
+    if (m.code !== undefined) return m.code;
+    env = m.env;
+    const { opts, order, rest } = parseArgs(argv, [
+      { flags: ['-h', '--help'], key: 'help' },
+      metaFlags(),
+    ]);
     if (opts.help) {
       write(fds[1], usage);
       return 0;
     }
+    noMeta(opts, order);
     if (rest.length) throw new UsageError(`unexpected argument: ${rest[0]}`);
     const tmp = scratch();
     try {

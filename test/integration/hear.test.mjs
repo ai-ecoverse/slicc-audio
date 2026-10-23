@@ -619,4 +619,15 @@ describe('schear --status and --warmup', () => {
     assert.equal(r.code, 1);
     assert.match(r.stderr, /^schear: no recognition engine available\n/);
   });
+
+  it('takes -v as a value of -d, not as the version', async () => {
+    const r = await run(schear, {
+      platform: 'darwin',
+      argv: ['-d', '-v'],
+      names: whisper,
+      env: { SLICC_AUDIO_CACHE: cached() },
+    });
+    assert.equal(r.code, 0, r.stderr);
+    assert.ok(r.calls[0].args.includes(':-v'));
+  });
 });

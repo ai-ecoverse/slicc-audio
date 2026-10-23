@@ -1,66 +1,64 @@
-import { readFileSync, realpathSync, writeFileSync } from 'node:fs';
-import { basename, dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { exec, lookup, root, scratch, VERSION, write } from './common.mjs';
+import { writeFileSync } from 'node:fs';
+import { exec, first, scratch, UsageError, VERSION, write } from './common.mjs';
 
 export const RELEASE = 'https://github.com/ai-ecoverse/slicc-audio/releases/latest/download';
 
-export function installed(dir = realpathSync(fileURLToPath(root))) {
+export const variable = (name) => `${name.toUpperCase()}_INSTALL_DIR`;
+
+async function download(url) {
   try {
-    const data = dirname(dir);
-    const info = JSON.parse(readFileSync(join(data, 'install.json'), 'utf8'));
-    if (basename(dir) !== info.version || typeof info.dir !== 'string') return undefined;
-    return { data, dir: info.dir, version: info.version };
-  } catch {
-    return undefined;
+    const res = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(60000) });
+    if (!res.ok) return { error: `HTTP ${res.status}` };
+    return { body: Buffer.from(await res.arrayBuffer()) };
+  } catch (error) {
+    return { error: error.cause?.message ?? error.message };
   }
 }
 
-export async function upgrade({ name, env, platform, fds, install = installed() }) {
-  if (!install) {
+export async function upgrade({ name, env, platform, fds, dir }) {
+  if (!dir) {
     write(fds[1], 'npm install -g @ai-ecoverse/slicc-audio@latest\n');
     return 0;
   }
   const windows = platform === 'win32';
   const script = windows ? 'install.ps1' : 'install.sh';
   const url = `${(env.SLICC_INSTALL_BASE_URL || RELEASE).replace(/\/+$/, '')}/${script}`;
+  const fetched = await download(url);
+  if (fetched.error) {
+    write(fds[2], `${name}: could not download ${url}: ${fetched.error}\n`);
+    return 1;
+  }
   const tmp = scratch();
   try {
-    let body;
-    try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(60000) });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      body = Buffer.from(await res.arrayBuffer());
-    } catch (error) {
-      write(fds[2], `${name}: cannot download ${url}: ${error.cause?.message ?? error.message}\n`);
-      return 1;
-    }
     const file = tmp.file(script);
-    writeFileSync(file, body);
-    const shell = windows ? 'powershell.exe' : 'sh';
-    const path = lookup(shell, platform, env);
-    if (!path) {
-      write(fds[2], `${name}: ${shell} not found\n`);
+    writeFileSync(file, fetched.body);
+    const tools = windows ? ['powershell.exe', 'pwsh.exe'] : ['sh'];
+    const tool = first(tools, platform, env);
+    if (!tool) {
+      write(fds[2], `${name}: no shell found to run ${script} (tried ${tools.join(', ')})\n`);
       return 1;
     }
     const args = windows
-      ? ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', file, '-Dir', install.dir]
-      : [file, '--dir', install.dir];
-    const result = await exec(path, args, { env, stdout: 'ignore' });
-    if (result.code !== 0) {
-      if (result.stderr.length) write(fds[2], result.stderr);
-      else write(fds[2], `${name}: the installer failed (exit ${result.code})\n`);
+      ? ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', file, '-Dir', dir]
+      : [file, '--dir', dir];
+    const result = await exec(tool.path, args, { env, stderr: fds[2] });
+    if (result.error) {
+      write(fds[2], `${name}: ${tool.file}: ${result.error.message}\n`);
       return 1;
     }
-    let next = VERSION;
-    try {
-      next = JSON.parse(readFileSync(join(install.data, 'install.json'), 'utf8')).version;
-    } catch {}
+    if (result.code !== 0) return 1;
+    const installed = new RegExp(`^${name} (\\S+) installed to `, 'm').exec(
+      result.stdout.toString()
+    )?.[1];
+    if (!installed) {
+      write(fds[2], `${name}: ${script} did not say which version it installed\n`);
+      return 1;
+    }
     write(
       fds[1],
-      next === VERSION
+      installed === VERSION
         ? `${name}: already up to date (${VERSION})\n`
-        : `${name}: ${VERSION} → ${next}\n`
+        : `${name}: ${VERSION} → ${installed}\n`
     );
     return 0;
   } finally {
@@ -68,14 +66,27 @@ export async function upgrade({ name, env, platform, fds, install = installed() 
   }
 }
 
-export async function meta({ name, argv, env, platform, fds, install, version = ['--version'] }) {
-  if (argv.includes('--upgrade')) {
-    if (argv.length !== 1) return { usage: '--upgrade takes no other arguments' };
-    return { code: await upgrade({ name, env, platform, fds, install }) };
+const META = ['--version', '--upgrade'];
+
+export async function meta({ name, argv, env, platform, fds, version = [] }) {
+  const dir = env[variable(name)];
+  const clean = { ...env };
+  for (const cmd of ['scsay', 'schear', 'scplay', 'scchime']) delete clean[variable(cmd)];
+  if (argv.length === 1 && argv[0] === '--upgrade') {
+    return { env: clean, code: await upgrade({ name, env: clean, platform, fds, dir }) };
   }
-  if (argv.some((arg) => version.includes(arg))) {
-    write(fds[1], `${name} ${VERSION}\n`);
-    return { code: 0 };
+  if (argv.length === 1 && [...META, ...version].includes(argv[0])) {
+    write(fds[1], `${VERSION}\n`);
+    return { env: clean, code: 0 };
   }
-  return undefined;
+  return { env: clean };
+}
+
+export function metaFlags(version = []) {
+  return { flags: [...META, ...version], key: 'meta' };
+}
+
+export function noMeta(opts, order) {
+  if (opts.meta)
+    throw new UsageError(`${order.find((e) => e.key === 'meta').flag} takes no other arguments`);
 }

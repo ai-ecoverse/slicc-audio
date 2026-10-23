@@ -4,21 +4,19 @@
   "plugins": [
     "@semantic-release/commit-analyzer",
     "@semantic-release/release-notes-generator",
-    "@semantic-release/npm",
+    ["@semantic-release/npm", { "tarballDir": "release" }],
     [
       "@semantic-release/exec",
-      {
-        "prepareCmd": "rm -rf dist && mkdir dist && npm pack --ignore-scripts --pack-destination dist && mv dist/ai-ecoverse-slicc-audio-${nextRelease.version}.tgz dist/slicc-audio-${nextRelease.version}.tgz && cp install.sh install.ps1 dist/ && cd dist && sha256sum slicc-audio-${nextRelease.version}.tgz install.sh install.ps1 > SHA256SUMS"
-      }
+      { "prepareCmd": "node scripts/assets.mjs release ${nextRelease.version}" }
     ],
     [
       "@semantic-release/github",
       {
         "assets": [
-          { "path": "dist/slicc-audio-*.tgz" },
-          { "path": "dist/SHA256SUMS" },
-          { "path": "dist/install.sh" },
-          { "path": "dist/install.ps1" }
+          { "path": "release/slicc-audio-*.tgz" },
+          { "path": "release/SHA256SUMS", "label": "SHA256SUMS" },
+          { "path": "install.sh", "label": "install.sh" },
+          { "path": "install.ps1", "label": "install.ps1" }
         ]
       }
     ]

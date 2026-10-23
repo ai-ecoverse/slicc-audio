@@ -1,24 +1,29 @@
 #!/bin/sh
 set -eu
 
-NAME="slicc-audio"
-REPO="ai-ecoverse/slicc-audio"
 COMMANDS="scsay schear scplay scchime"
+PACKAGE="slicc-audio"
+REPO="ai-ecoverse/slicc-audio"
 MIN_NODE=24
-DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/slicc-audio"
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/$PACKAGE"
 
 usage() {
-  printf 'Usage: sh -s -- [--version VERSION] [--dir DIR] [--help]\n'
-  printf '\nInstall %s (%s), with Node %s+ (downloaded if missing).\n' "$NAME" "$COMMANDS" "$MIN_NODE"
-  printf '\nOptions:\n'
-  printf '  --version VERSION   install that release instead of the latest\n'
-  printf '  --dir DIR           the launcher directory (default: %s/.local/bin)\n' "\$HOME"
+  printf 'usage: install.sh [--version VERSION] [--dir DIR] [--help]\n'
+  printf '\nInstalls %s from @ai-ecoverse/%s, with Node %s or later (downloaded if missing).\n' "$COMMANDS" "$PACKAGE" "$MIN_NODE"
+  printf '\n  --version VERSION   the release to install (default: the latest)\n'
+  printf '  --dir DIR           where the launchers go (default: %s/.local/bin)\n' "\$HOME"
   printf '  --help              print this usage and exit\n'
 }
 
 die() {
-  printf '%s: %s\n' "$NAME" "$1" >&2
-  exit "${2:-1}"
+  printf 'install.sh: %s\n' "$1" >&2
+  exit 1
+}
+
+usage_error() {
+  printf 'install.sh: %s\n' "$1" >&2
+  usage >&2
+  exit 2
 }
 
 VERSION=""
@@ -28,37 +33,33 @@ NODE_DIST_BASE="${SLICC_NODE_DIST_BASE:-https://nodejs.org/dist}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --version)
-      [ $# -ge 2 ] || die "--version needs a value" 2
-      VERSION="${2#v}"
+    --version|--dir)
+      [ $# -ge 2 ] || usage_error "$1 needs a value"
+      if [ "$1" = --version ]; then VERSION="${2#v}"; else INSTALL_DIR="$2"; fi
       shift 2
       ;;
-    --dir)
-      [ $# -ge 2 ] || die "--dir needs a value" 2
-      INSTALL_DIR="$2"
-      shift 2
-      ;;
-    --help)
-      usage
-      exit 0
-      ;;
-    *) die "unknown option: $1" 2 ;;
+    --version=*) VERSION="${1#--version=}"; VERSION="${VERSION#v}"; shift ;;
+    --dir=*) INSTALL_DIR="${1#--dir=}"; shift ;;
+    --help|-h) usage; exit 0 ;;
+    *) usage_error "unknown option $1" ;;
   esac
 done
+
+[ -n "$INSTALL_DIR" ] || usage_error "--dir needs a value"
 
 detect_os() {
   case "$(uname -s)" in
     Darwin) printf 'darwin' ;;
     Linux) printf 'linux' ;;
-    *) die "no official Node for $(uname -s); install Node $MIN_NODE+ and run npm install -g @ai-ecoverse/slicc-audio" ;;
+    *) die "no Node download for $(uname -s); install Node $MIN_NODE or later, then npm install -g @ai-ecoverse/$PACKAGE" ;;
   esac
 }
 
 detect_arch() {
   case "$(uname -m)" in
-    x86_64 | amd64) printf 'x64' ;;
-    arm64 | aarch64) printf 'arm64' ;;
-    *) die "unsupported architecture: $(uname -m)" ;;
+    x86_64|amd64) printf 'x64' ;;
+    arm64|aarch64) printf 'arm64' ;;
+    *) die "no Node download for $(uname -m); install Node $MIN_NODE or later and re-run" ;;
   esac
 }
 
@@ -66,19 +67,17 @@ is_musl() {
   for f in /lib/ld-musl-*; do
     if [ -e "$f" ]; then return 0; fi
   done
-  if command -v ldd >/dev/null 2>&1; then
-    if ldd --version 2>&1 | grep -qi musl; then return 0; fi
-  fi
+  if command -v ldd >/dev/null 2>&1 && ldd --version 2>&1 | grep -qi musl; then return 0; fi
   return 1
 }
 
 fetch() {
   if command -v curl >/dev/null 2>&1; then
-    curl -fsSL -o "$2" "$1" || die "cannot download $1"
+    curl -fsSL -o "$2" "$1" || die "could not download $1"
   elif command -v wget >/dev/null 2>&1; then
-    wget -qO "$2" "$1" || die "cannot download $1"
+    wget -qO "$2" "$1" || die "could not download $1"
   else
-    die "curl or wget required"
+    die "curl or wget is required"
   fi
 }
 
@@ -88,20 +87,18 @@ sha256() {
   elif command -v shasum >/dev/null 2>&1; then
     shasum -a 256 "$1" | cut -d' ' -f1
   else
-    die "sha256sum or shasum required"
+    die "sha256sum or shasum is required"
   fi
 }
 
 verify() {
+  [ -n "$2" ] || die "no checksum for $(basename "$1")"
   _actual="$(sha256 "$1")"
-  if [ "$_actual" != "$2" ]; then
-    printf '%s: checksum mismatch for %s\n  expected: %s\n  actual:   %s\n' "$NAME" "$(basename "$1")" "$2" "$_actual" >&2
-    exit 1
-  fi
+  [ "$_actual" = "$2" ] || die "checksum mismatch for $(basename "$1"): expected $2, got $_actual"
 }
 
 sum_of() {
-  awk -v f="$2" '{ n = $2; sub(/^\*/, "", n) } n == f { print $1; exit }' "$1"
+  grep "^[0-9a-f]\{64\}  \*\{0,1\}$2\$" "$1" | head -1 | cut -d' ' -f1
 }
 
 node_ok() {
@@ -115,55 +112,58 @@ find_node() {
     command -v node
     return 0
   fi
-  if [ -x "$DATA_DIR/node/bin/node" ] && node_ok "$DATA_DIR/node/bin/node"; then
-    printf '%s\n' "$DATA_DIR/node/bin/node"
+  _managed="$DATA_DIR/node/bin/node"
+  if [ -x "$_managed" ] && node_ok "$_managed"; then
+    printf '%s' "$_managed"
     return 0
   fi
   return 1
 }
 
 pick_node() {
-  tr '{' '\n' <"$1" |
-    sed -n 's/.*"version":"v\([0-9][0-9]*\)\.\([0-9][0-9.]*\)".*"lts":\([^,}]*\).*/\1 \2 \3/p' |
-    awk -v min="$MIN_NODE" '$1 + 0 >= min + 0 && $3 != "false" { print "v" $1 "." $2; exit }'
+  printf '%s\n' "$1" | tr '{' '\n' | \
+    sed -n 's/.*"version": *"v\([0-9][0-9]*\)\.\([0-9][0-9.]*\)".*"lts": *\([^,}]*\).*/\1 \2 \3/p' | \
+    awk -v min="$MIN_NODE" -v lts="$2" '$1 + 0 >= min + 0 && (lts == 0 || $3 != "false") { print "v" $1 "." $2; exit }'
 }
 
-download_node() {
-  OS="$(detect_os)"
-  ARCH="$(detect_arch)"
-  if [ "$OS" = "linux" ] && is_musl; then
-    die "musl Linux has no official Node build; install Node $MIN_NODE+ with your package manager (for example apk add nodejs-current), then run this again"
+ensure_node() {
+  if _found="$(find_node)"; then
+    printf '%s' "$_found"
+    return 0
   fi
-  printf '%s: no Node %s+ found; downloading it\n' "$NAME" "$MIN_NODE" >&2
-  fetch "$NODE_DIST_BASE/index.json" "$TMP/index.json"
-  NODE_VERSION="$(pick_node "$TMP/index.json")"
-  [ -n "$NODE_VERSION" ] || die "no Node $MIN_NODE+ LTS release at $NODE_DIST_BASE"
-  ARCHIVE="node-$NODE_VERSION-$OS-$ARCH.tar.xz"
-  fetch "$NODE_DIST_BASE/$NODE_VERSION/SHASUMS256.txt" "$TMP/SHASUMS256.txt"
-  EXPECTED="$(sum_of "$TMP/SHASUMS256.txt" "$ARCHIVE")"
-  [ -n "$EXPECTED" ] || die "no checksum for $ARCHIVE in SHASUMS256.txt"
-  fetch "$NODE_DIST_BASE/$NODE_VERSION/$ARCHIVE" "$TMP/$ARCHIVE"
-  verify "$TMP/$ARCHIVE" "$EXPECTED"
+  _os="$(detect_os)"
+  _arch="$(detect_arch)"
+  if [ "$_os" = linux ] && is_musl; then
+    die "no official Node for musl; install Node $MIN_NODE or later (for example apk add nodejs-current) and re-run"
+  fi
+  printf 'install.sh: no Node %s or later on PATH, downloading it\n' "$MIN_NODE" >&2
+  _tmp="$(mktemp -d)"
+  fetch "$NODE_DIST_BASE/index.json" "$_tmp/index.json"
+  _index="$(cat "$_tmp/index.json")"
+  _version="$(pick_node "$_index" 1)"
+  [ -n "$_version" ] || _version="$(pick_node "$_index" 0)"
+  [ -n "$_version" ] || die "no Node $MIN_NODE or later in $NODE_DIST_BASE/index.json"
+  _archive="node-$_version-$_os-$_arch.tar.gz"
+  fetch "$NODE_DIST_BASE/$_version/SHASUMS256.txt" "$_tmp/SHASUMS256.txt"
+  fetch "$NODE_DIST_BASE/$_version/$_archive" "$_tmp/$_archive"
+  verify "$_tmp/$_archive" "$(sum_of "$_tmp/SHASUMS256.txt" "$_archive")"
   mkdir -p "$DATA_DIR"
-  rm -rf "$DATA_DIR/.node-$$"
-  mkdir -p "$DATA_DIR/.node-$$"
-  if command -v xz >/dev/null 2>&1; then
-    xz -dc "$TMP/$ARCHIVE" | tar xf - -C "$DATA_DIR/.node-$$" --strip-components=1
-  else
-    tar xJf "$TMP/$ARCHIVE" -C "$DATA_DIR/.node-$$" --strip-components=1
-  fi
-  rm -rf "$DATA_DIR/node"
-  mv "$DATA_DIR/.node-$$" "$DATA_DIR/node"
-  printf '%s: installed Node %s to %s\n' "$NAME" "$NODE_VERSION" "$DATA_DIR/node" >&2
-  printf '%s\n' "$DATA_DIR/node/bin/node"
+  _extract="$DATA_DIR/.node-$$"
+  rm -rf "$_extract"
+  mkdir -p "$_extract"
+  tar xzf "$_tmp/$_archive" -C "$_extract" --strip-components=1
+  rm -rf "$_tmp" "$DATA_DIR/node"
+  mv "$_extract" "$DATA_DIR/node"
+  printf 'install.sh: Node %s installed to %s\n' "$_version" "$DATA_DIR/node" >&2
+  printf '%s' "$DATA_DIR/node/bin/node"
 }
 
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+quoted() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
 
-NODE_BIN="$(find_node)" || NODE_BIN="$(download_node)"
-NODE_DIR="$(cd "$(dirname "$NODE_BIN")" && pwd)"
-NODE_ABS="$NODE_DIR/$(basename "$NODE_BIN")"
+NODE_BIN="$(ensure_node)"
+NODE_ABS="$(cd "$(dirname "$NODE_BIN")" && pwd -P)/$(basename "$NODE_BIN")"
 
 if [ -z "$BASE_URL" ]; then
   if [ -z "$VERSION" ]; then
@@ -174,73 +174,66 @@ if [ -z "$BASE_URL" ]; then
 fi
 BASE_URL="${BASE_URL%/}"
 
-fetch "$BASE_URL/SHA256SUMS" "$TMP/SHA256SUMS"
+TMP_INSTALL="$(mktemp -d)"
+trap 'rm -rf "$TMP_INSTALL"' EXIT
+
+fetch "$BASE_URL/SHA256SUMS" "$TMP_INSTALL/SHA256SUMS"
 if [ -n "$VERSION" ]; then
-  TGZ="slicc-audio-$VERSION.tgz"
+  TGZ="$PACKAGE-$VERSION.tgz"
 else
-  TGZ="$(awk '{ n = $2; sub(/^\*/, "", n) } n ~ /^slicc-audio-[0-9][^\/]*\.tgz$/ { print n; exit }' "$TMP/SHA256SUMS")"
-  [ -n "$TGZ" ] || die "no slicc-audio-<version>.tgz in SHA256SUMS"
+  TGZ="$(sed -n "s/^[0-9a-f]\{64\}  \*\{0,1\}\($PACKAGE-[0-9][0-9A-Za-z.+-]*\.tgz\)\$/\1/p" "$TMP_INSTALL/SHA256SUMS" | head -1)"
+  [ -n "$TGZ" ] || die "no $PACKAGE tarball in $BASE_URL/SHA256SUMS"
 fi
-EXPECTED="$(sum_of "$TMP/SHA256SUMS" "$TGZ")"
-[ -n "$EXPECTED" ] || die "no checksum for $TGZ in SHA256SUMS"
-fetch "$BASE_URL/$TGZ" "$TMP/$TGZ"
-verify "$TMP/$TGZ" "$EXPECTED"
+fetch "$BASE_URL/$TGZ" "$TMP_INSTALL/$TGZ"
+verify "$TMP_INSTALL/$TGZ" "$(sum_of "$TMP_INSTALL/SHA256SUMS" "$TGZ")"
 
-PKG_VERSION="${TGZ#slicc-audio-}"
-PKG_VERSION="${PKG_VERSION%.tgz}"
-TARGET="$DATA_DIR/$PKG_VERSION"
-STAGE="$DATA_DIR/.install-$$"
+BUNDLE_VERSION="${TGZ#"$PACKAGE"-}"
+BUNDLE_VERSION="${BUNDLE_VERSION%.tgz}"
+BUNDLE_DIR="$DATA_DIR/$BUNDLE_VERSION"
 mkdir -p "$DATA_DIR"
-rm -rf "$STAGE"
-mkdir -p "$STAGE"
-tar xzf "$TMP/$TGZ" -C "$STAGE" --strip-components=1
-
+EXTRACT="$DATA_DIR/.bundle-$$"
+rm -rf "$EXTRACT"
+mkdir -p "$EXTRACT"
+tar xzf "$TMP_INSTALL/$TGZ" -C "$EXTRACT" --strip-components=1
+for cmd in $COMMANDS; do
+  [ -f "$EXTRACT/host/$cmd.mjs" ] || die "$TGZ has no host/$cmd.mjs"
+done
+NODE_DIR="$(dirname "$NODE_ABS")"
 if [ -x "$NODE_DIR/npm" ]; then
   NPM="$NODE_DIR/npm"
-elif command -v npm >/dev/null 2>&1; then
-  NPM="$(command -v npm)"
 else
-  rm -rf "$STAGE"
-  die "npm not found next to $NODE_ABS"
+  NPM="$(command -v npm)" || die "no npm next to $NODE_ABS"
 fi
-if ! (cd "$STAGE" && PATH="$NODE_DIR:$PATH" "$NPM" install --omit=dev --ignore-scripts --no-audit --no-fund >"$TMP/npm.log" 2>&1); then
-  cat "$TMP/npm.log" >&2
-  rm -rf "$STAGE"
-  die "npm install failed"
+if ! (cd "$EXTRACT" && PATH="$NODE_DIR:$PATH" "$NPM" install --omit=dev --ignore-scripts --no-audit --no-fund >"$TMP_INSTALL/npm.log" 2>&1); then
+  cat "$TMP_INSTALL/npm.log" >&2
+  rm -rf "$EXTRACT"
+  die "npm install failed in $TGZ"
 fi
-
-rm -rf "$TARGET"
-mv "$STAGE" "$TARGET"
-ln -sfn "$PKG_VERSION" "$DATA_DIR/current"
+rm -rf "$BUNDLE_DIR"
+mv "$EXTRACT" "$BUNDLE_DIR"
 
 mkdir -p "$INSTALL_DIR"
-INSTALL_DIR="$(cd "$INSTALL_DIR" && pwd)"
+INSTALL_DIR="$(cd "$INSTALL_DIR" && pwd -P)"
+for cmd in $COMMANDS; do
+  VAR="$(printf '%s' "$cmd" | tr '[:lower:]' '[:upper:]')_INSTALL_DIR"
+  LAUNCHER="$INSTALL_DIR/$cmd"
+  LAUNCHER_TMP="$LAUNCHER.tmp.$$"
+  {
+    printf '#!/bin/sh\n'
+    printf '%s=%s\n' "$VAR" "$(quoted "$INSTALL_DIR")"
+    printf 'export %s\n' "$VAR"
+    printf 'exec %s %s "$@"\n' "$(quoted "$NODE_ABS")" "$(quoted "$BUNDLE_DIR/host/$cmd.mjs")"
+  } > "$LAUNCHER_TMP"
+  chmod 755 "$LAUNCHER_TMP"
+  mv "$LAUNCHER_TMP" "$LAUNCHER"
+done
+
 for cmd in $COMMANDS; do
   LAUNCHER="$INSTALL_DIR/$cmd"
-  printf '#!/bin/sh\nexec "%s" "%s" "$@"\n' "$NODE_ABS" "$DATA_DIR/current/host/$cmd.mjs" >"$LAUNCHER.$$"
-  chmod 755 "$LAUNCHER.$$"
-  mv -f "$LAUNCHER.$$" "$LAUNCHER"
+  REPORTED="$("$LAUNCHER" --version 2>/dev/null)" || die "$LAUNCHER --version failed"
+  [ "$REPORTED" = "$BUNDLE_VERSION" ] || [ "$REPORTED" = "$cmd $BUNDLE_VERSION" ] || die "$LAUNCHER reports $REPORTED, not $BUNDLE_VERSION"
+  printf '%s %s installed to %s\n' "$cmd" "$BUNDLE_VERSION" "$LAUNCHER"
 done
-
-json_string() {
-  printf '"%s"' "$(printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g')"
-}
-printf '{"version":%s,"dir":%s}\n' "$(json_string "$PKG_VERSION")" "$(json_string "$INSTALL_DIR")" >"$DATA_DIR/install.json.$$"
-mv -f "$DATA_DIR/install.json.$$" "$DATA_DIR/install.json"
-
-for old in "$DATA_DIR"/*; do
-  case "$(basename "$old")" in
-    "$PKG_VERSION" | node | current | install.json) ;;
-    [0-9]*) rm -rf "$old" ;;
-  esac
-done
-
-INSTALLED=""
-for cmd in $COMMANDS; do
-  OUT="$("$INSTALL_DIR/$cmd" --version)" || die "$INSTALL_DIR/$cmd --version failed"
-  INSTALLED="${OUT#"$cmd" }"
-done
-printf '%s %s installed to %s\n' "$NAME" "$INSTALLED" "$INSTALL_DIR"
 
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;

@@ -21,7 +21,7 @@ import {
 } from './engines.mjs';
 import { devices, ffmpegOf, record, source } from './mic.mjs';
 import { report } from './play.mjs';
-import { meta } from './upgrade.mjs';
+import { meta, metaFlags, noMeta } from './upgrade.mjs';
 import { chime } from './wav.mjs';
 import {
   ensureModel,
@@ -435,11 +435,12 @@ async function listen(ctx, input) {
 }
 
 async function main(base, argv) {
-  const { opts, rest } = parseArgs(argv, SPEC);
+  const { opts, order, rest } = parseArgs(argv, [...SPEC, metaFlags(['-v'])]);
   if (opts.help) {
     write(base.fds[1], usageOf(base.name));
     return 0;
   }
+  noMeta(opts, order);
   const ctx = contextOf(base, opts, rest);
   const { name, platform, env, fds } = ctx;
   if (opts.supported) {
@@ -465,10 +466,9 @@ export async function schear({
   ortllama = loadOrtllama,
 }) {
   try {
-    const m = await meta({ name, argv, env, platform, fds, version: ['--version', '-v'] });
-    if (m?.usage) throw new UsageError(m.usage);
-    if (m) return m.code;
-    return await main({ name, env, platform, fds, ortllama }, argv);
+    const m = await meta({ name, argv, env, platform, fds, version: ['-v'] });
+    if (m.code !== undefined) return m.code;
+    return await main({ name, env: m.env, platform, fds, ortllama }, argv);
   } catch (error) {
     return report(name, error, usageOf(name), fds);
   }

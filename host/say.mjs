@@ -15,9 +15,7 @@ import {
 } from './common.mjs';
 import {
   checked,
-  KOKORO,
   kokoroVoice,
-  kokoroVoices,
   listed,
   loadModule,
   loadOrtllama,
@@ -27,6 +25,7 @@ import {
   ollamaBase,
   ortllamaMissing,
   ortllamaStatus,
+  ortllamaVoices,
   speech,
   status,
   Unavailable,
@@ -35,14 +34,17 @@ import {
   withOrtllama,
 } from './engines.mjs';
 import { playFile, report } from './play.mjs';
-import { meta } from './upgrade.mjs';
+import { meta, metaFlags, noMeta } from './upgrade.mjs';
 import {
   convert,
   dataFormat,
   dataFormatList,
+  decodeWav,
+  encode,
   fileFormat,
   fileFormatList,
   formatOf,
+  resample,
 } from './wav.mjs';
 
 const SPEC = [
@@ -352,6 +354,52 @@ async function winSpeak(ctx, tool, text) {
   }
 }
 
+export const MAX_INPUT = 4096;
+
+export function chunks(text, max = MAX_INPUT) {
+  const out = [];
+  let current = '';
+  const push = (piece) => {
+    if (current.length + piece.length > max && current) {
+      out.push(current);
+      current = '';
+    }
+    current += piece;
+  };
+  for (const sentence of text.match(/[^.!?\n]*[.!?\n]*\s*/g)) {
+    if (sentence.length <= max) {
+      push(sentence);
+      continue;
+    }
+    for (const word of sentence.match(/\S*\s*/g)) {
+      for (let at = 0; at < word.length; at += max) push(word.slice(at, at + max));
+    }
+  }
+  if (current.trim()) out.push(current);
+  return out;
+}
+
+async function synth(line, request) {
+  const parts = chunks(line);
+  if (parts.length === 1) return request(parts[0]);
+  const decoded = [];
+  for (const part of parts) decoded.push(decodeWav(await request(part)));
+  const rate = decoded[0].rate;
+  const samples = decoded.map((d) => resample(d.samples, d.rate, rate));
+  const all = new Float32Array(samples.reduce((n, s) => n + s.length, 0));
+  let at = 0;
+  for (const s of samples) {
+    all.set(s, at);
+    at += s.length;
+  }
+  return encode(all, {
+    format: 'WAVE',
+    data: { endian: 'LE', kind: 'F', bits: 32 },
+    channels: 1,
+    rate,
+  });
+}
+
 function lines(ctx, text) {
   return ctx.interactive && !ctx.output ? text.split(/\r?\n/).filter((l) => l.trim()) : [text];
 }
@@ -386,8 +434,8 @@ const engines = {
   },
   ortllama: {
     async speak(ctx, text) {
-      const voice = kokoroChoice(ctx);
       await withOrtllama(ctx.ortllama, ctx.env, async (base) => {
+        const voice = await kokoroChoice(ctx, base);
         for (const line of lines(ctx, text)) {
           const request = {
             input: line,
@@ -396,8 +444,10 @@ const engines = {
             response_format: 'wav',
           };
           if (ctx.model) request.model = ctx.model;
-          const res = await speech(base, request);
-          const wav = checked(res, () => ortllamaMissing(res));
+          const wav = await synth(line, async (input) => {
+            const res = await speech(base, { ...request, input });
+            return checked(res, () => ortllamaMissing(res));
+          });
           if (ctx.interactive && !ctx.output) write(ctx.fds[1], `${line}\n`);
           if (ctx.output) await deliver(ctx, wav);
           else await speakWav(ctx, wav);
@@ -405,8 +455,7 @@ const engines = {
       });
     },
     async voices(ctx) {
-      await loadModule(ctx.ortllama);
-      return kokoroVoices(ctx.env, ctx.model ?? KOKORO);
+      return withOrtllama(ctx.ortllama, ctx.env, (base) => ortllamaVoices(base, ctx.model));
     },
     async status(ctx) {
       try {
@@ -447,9 +496,11 @@ const engines = {
           response_format: 'wav',
         };
         if ((ctx.rate ?? 1) !== 1) request.speed = clamp(ctx.rate, 0.25, 4);
-        const res = await speech(base, request);
-        if (res.offline) throw offline(base);
-        const wav = checked(res, () => new Unavailable(`model not pulled (ollama pull ${model})`));
+        const wav = await synth(line, async (input) => {
+          const res = await speech(base, { ...request, input });
+          if (res.offline) throw offline(base);
+          return checked(res, () => new Unavailable(`model not pulled (ollama pull ${model})`));
+        });
         if (ctx.interactive && !ctx.output) write(ctx.fds[1], `${line}\n`);
         if (ctx.output) await deliver(ctx, wav);
         else await speakWav(ctx, wav);
@@ -491,9 +542,9 @@ async function ortllamaState(ctx, base) {
   });
 }
 
-function kokoroChoice(ctx) {
+async function kokoroChoice(ctx, base) {
   if (ctx.voice) {
-    const voices = kokoroVoices(ctx.env, ctx.model ?? KOKORO);
+    const voices = await ortllamaVoices(base, ctx.model);
     if (!voices.length) return ctx.voice;
     const pick = matchVoice(voices, ctx.voice);
     if (!pick) throw new Failure(`voice "${ctx.voice}" not found (${ctx.name} -v '?' lists them)`);
@@ -650,11 +701,12 @@ async function speakWith(ctx, text) {
 }
 
 async function main(base, argv) {
-  const { opts, order, rest } = parseArgs(argv, SPEC);
+  const { opts, order, rest } = parseArgs(argv, [...SPEC, metaFlags()]);
   if (opts.help) {
     write(base.fds[1], usageOf(base.name));
     return 0;
   }
+  noMeta(opts, order);
   const ctx = contextOf(base, opts, order);
   if (opts.fileFormat === '?' || opts.dataFormat === '?') return formats(ctx, opts);
   ctx.output = outputOf(opts, base.platform === 'darwin');
@@ -669,9 +721,8 @@ async function main(base, argv) {
 export async function scsay({ name = 'scsay', argv, env, platform, fds, ortllama = loadOrtllama }) {
   try {
     const m = await meta({ name, argv, env, platform, fds });
-    if (m?.usage) throw new UsageError(m.usage);
-    if (m) return m.code;
-    return await main({ name, env, platform, fds, ortllama }, argv);
+    if (m.code !== undefined) return m.code;
+    return await main({ name, env: m.env, platform, fds, ortllama }, argv);
   } catch (error) {
     return report(name, error, usageOf(name), fds);
   }

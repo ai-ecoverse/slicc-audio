@@ -1,6 +1,4 @@
-import { readdirSync } from 'node:fs';
-import { join } from 'node:path';
-import { exec, Failure, hubCache, lookup, words, write } from './common.mjs';
+import { exec, Failure, lookup, words, write } from './common.mjs';
 
 export class Unavailable extends Error {
   constructor(reason, status = reason) {
@@ -10,8 +8,6 @@ export class Unavailable extends Error {
 }
 
 export const loadOrtllama = () => import('@ai-ecoverse/slicc-ortllama');
-
-export const KOKORO = 'onnx-community/Kokoro-82M-v1.0-ONNX';
 
 const KOKORO_LANGS = {
   'en-US': 'af_heart',
@@ -24,43 +20,24 @@ const KOKORO_LANGS = {
   pt: 'pf_dora',
 };
 
-const KOKORO_LOCALES = {
-  a: 'en_US',
-  b: 'en_GB',
-  e: 'es_ES',
-  f: 'fr_FR',
-  h: 'hi_IN',
-  i: 'it_IT',
-  j: 'ja_JP',
-  p: 'pt_BR',
-  z: 'zh_CN',
-};
-
 export function kokoroVoice(tag) {
   return KOKORO_LANGS[tag] ?? KOKORO_LANGS[tag.split('-')[0]];
 }
 
-export function kokoroVoices(env, model = KOKORO) {
-  const repo = join(
-    hubCache(env),
-    `models--${model.split('/').slice(0, 2).join('--')}`,
-    'snapshots'
-  );
-  const names = new Set();
+export async function ortllamaVoices(base, model) {
+  const query = model ? `?model=${encodeURIComponent(model)}` : '';
   try {
-    for (const snap of readdirSync(repo)) {
-      try {
-        for (const file of readdirSync(join(repo, snap, 'voices'))) {
-          if (file.endsWith('.bin')) names.add(file.slice(0, -4));
-        }
-      } catch {}
-    }
-  } catch {}
-  return [...names].sort().map((name) => ({
-    name,
-    lang: KOKORO_LOCALES[name[0]] ?? 'en_US',
-    default: name === 'af_heart',
-  }));
+    const res = await fetch(`${base}/v1/audio/voices${query}`);
+    if (!res.ok) return [];
+    const data = (await res.json()).data ?? [];
+    return data.map((v) => ({
+      name: v.id,
+      lang: String(v.language ?? 'en-US').replace('-', '_'),
+      default: v.id === 'af_heart',
+    }));
+  } catch {
+    return [];
+  }
 }
 
 export function matchVoice(voices, wanted) {

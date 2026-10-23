@@ -8,6 +8,7 @@ import {
   openSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -17,7 +18,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after } from 'node:test';
 
-export const scratch = mkdtempSync(join(tmpdir(), 'slicc-audio-test-'));
+export const scratch = mkdtempSync(join(realpathSync(tmpdir()), 'slicc-audio-test-'));
 after(() => rmSync(scratch, { recursive: true, force: true }));
 
 export function temp(prefix) {
@@ -51,7 +52,7 @@ const name = /^(powershell|pwsh)\.exe$/.test(file) ? file : file.replace(/\.exe$
 const args = process.argv.slice(2);
 const log = process.env.FAKE_LOG;
 const env = {};
-for (const [k, v] of Object.entries(process.env)) if (k.startsWith('SLICC_AUDIO_')) env[k] = v;
+for (const [k, v] of Object.entries(process.env)) if (k.startsWith('SLICC_AUDIO_') || k.endsWith('_INSTALL_DIR')) env[k] = v;
 let stdin = '';
 const reads = ['say', 'espeak-ng', 'espeak', 'powershell.exe', 'pwsh.exe'].includes(name) && !args.includes('-L') && !args.includes('--voices') && !(args[0] === '-v' && args[1] === '?');
 if (reads && process.env.SLICC_AUDIO_MODE !== 'list') stdin = fs.readFileSync(0, 'utf8');
@@ -233,6 +234,7 @@ export async function fakeServer() {
     models: { ortllama: [], ollama: [] },
     answer: {},
     transcript: 'hello from the server',
+    voices: [],
     files: {},
   };
   const server = createServer((req, res) => {
@@ -248,7 +250,7 @@ export async function fakeServer() {
         parsed = JSON.parse(body.toString('utf8'));
       else if ((req.headers['content-type'] ?? '').includes('multipart'))
         parsed = multipart(body, req.headers['content-type']);
-      state.requests.push({ tier, method: req.method, route, body: parsed });
+      state.requests.push({ tier, method: req.method, route, query: url.search, body: parsed });
       const send = (status, data, type = 'application/json', headers = {}) => {
         res.writeHead(status, { 'content-type': type, ...headers });
         res.end(typeof data === 'string' || Buffer.isBuffer(data) ? data : JSON.stringify(data));
@@ -283,8 +285,16 @@ export async function fakeServer() {
           object: 'list',
           data: state.models[tier].map((id) => ({ id, object: 'model' })),
         });
+      if (route === '/v1/audio/voices') {
+        const model = url.searchParams.get('model');
+        const data = state.voices.filter((v) => !model || v.model === model);
+        return send(200, { object: 'list', data });
+      }
       if (route === '/v1/audio/speech') {
         const model = parsed.model ?? 'speech';
+        state.inputs?.push(parsed.input.length);
+        if (parsed.input.length > 4096)
+          return send(400, { error: { message: 'input must be at most 4096 characters' } });
         if (!state.models[tier].includes(model)) {
           return send(404, {
             error: {
@@ -338,6 +348,7 @@ export async function fakeServer() {
     state.closed = 0;
     state.models = { ortllama: [], ollama: [] };
     state.answer = {};
+    state.voices = [];
   };
   return state;
 }

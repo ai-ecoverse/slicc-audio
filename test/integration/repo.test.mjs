@@ -72,27 +72,19 @@ describe('the repository', () => {
   it('attaches the installers, the tarball and SHA256SUMS to every GitHub release', () => {
     const release = JSON.parse(read('.releaserc.json'));
     const plugin = (name) => release.plugins.find((p) => Array.isArray(p) && p[0] === name)[1];
-    const assets = plugin('@semantic-release/github').assets.map((asset) => asset.path);
-    assert.deepEqual(assets, [
-      'dist/slicc-audio-*.tgz',
-      'dist/SHA256SUMS',
-      'dist/install.sh',
-      'dist/install.ps1',
-    ]);
-    const cmd = plugin('@semantic-release/exec').prepareCmd;
-    assert.match(cmd, /npm pack --ignore-scripts --pack-destination dist/);
-    assert.match(
-      cmd,
-      /mv dist\/ai-ecoverse-slicc-audio-\$\{nextRelease\.version\}\.tgz dist\/slicc-audio-\$\{nextRelease\.version\}\.tgz/
+    assert.deepEqual(plugin('@semantic-release/npm'), { tarballDir: 'release' });
+    assert.equal(
+      plugin('@semantic-release/exec').prepareCmd,
+      'node scripts/assets.mjs release ${nextRelease.version}'
     );
-    assert.match(cmd, /cp install\.sh install\.ps1 dist\//);
-    assert.match(
-      cmd,
-      /sha256sum slicc-audio-\$\{nextRelease\.version\}\.tgz install\.sh install\.ps1 > SHA256SUMS$/
+    assert.deepEqual(
+      plugin('@semantic-release/github').assets.map((asset) => asset.path),
+      ['release/slicc-audio-*.tgz', 'release/SHA256SUMS', 'install.sh', 'install.ps1']
     );
-    assert.ok(read('.gitignore').split('\n').includes('dist/'));
+    assert.ok(read('.gitignore').split('\n').includes('release/'));
     assert.ok(read('install.sh').startsWith('#!/bin/sh\n'));
     assert.match(read('install.ps1'), /^param\(/);
+    assert.match(pkg.scripts.lint, /shellcheck -s sh install\.sh && dash -n install\.sh/);
   });
 
   it('ships the four host commands, with slicc-ortllama as its only, optional, dependency', () => {

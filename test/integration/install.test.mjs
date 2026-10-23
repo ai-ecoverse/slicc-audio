@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { cpSync, lstatSync, readdirSync, readlinkSync } from 'node:fs';
+import { cpSync, readdirSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { join, resolve } from 'node:path';
 import { after, describe, it } from 'node:test';
@@ -12,6 +12,7 @@ const sys = hideNode();
 const os = process.platform === 'darwin' ? 'darwin' : 'linux';
 const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
 const NODE = 'v24.9.0';
+const COMMANDS = ['scsay', 'schear', 'scplay', 'scchime'];
 const sha = (data) => createHash('sha256').update(data).digest('hex');
 const files = new Map();
 const hits = [];
@@ -34,30 +35,47 @@ function tar(dir, args) {
   assert.equal(r.status, 0, r.stderr);
 }
 
-function release(version, { pkg = {} } = {}) {
+function release(version, { old = false } = {}) {
   const dir = temp('pkg');
   const pack = join(dir, 'package');
   mkdirSync(pack);
   cpSync(join(root, 'host'), join(pack, 'host'), { recursive: true });
+  if (old) {
+    const file = join(pack, 'host', 'upgrade.mjs');
+    const text = readFileSync(file, 'utf8');
+    assert.ok(text.includes('write(fds[1], `${VERSION}\\n`)'));
+    writeFileSync(
+      file,
+      text.replace('write(fds[1], `${VERSION}\\n`)', 'write(fds[1], `${name} ${VERSION}\\n`)')
+    );
+  }
   const json = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
   delete json.optionalDependencies;
   delete json.devDependencies;
   delete json.scripts;
-  writeFileSync(join(pack, 'package.json'), JSON.stringify({ ...json, version, ...pkg }));
-  tar(dir, ['czf', 'out.tgz', 'package']);
-  return readFileSync(join(dir, 'out.tgz'));
+  writeFileSync(join(pack, 'package.json'), JSON.stringify({ ...json, version }));
+  const out = temp('assets');
+  tar(dir, ['czf', join(out, `ai-ecoverse-slicc-audio-${version}.tgz`), 'package']);
+  const assets = spawnSync(process.execPath, [join(root, 'scripts', 'assets.mjs'), out, version], {
+    encoding: 'utf8',
+  });
+  assert.equal(assets.status, 0, assets.stderr);
+  return out;
 }
 
-function publish(prefix, tgzs, { corrupt = false } = {}) {
+function publish(prefix, dirs, { corrupt = false } = {}) {
   const sums = [];
-  for (const [version, data] of tgzs) {
-    const name = `slicc-audio-${version}.tgz`;
-    files.set(`${prefix}/${name}`, data);
-    sums.push(`${corrupt ? sha('other') : sha(data)}  ${name}`);
+  for (const dir of dirs) {
+    for (const name of readdirSync(dir)) {
+      if (name.endsWith('.tgz')) files.set(`${prefix}/${name}`, readFileSync(join(dir, name)));
+    }
+    for (const line of readFileSync(join(dir, 'SHA256SUMS'), 'utf8').trim().split('\n')) {
+      if (line.endsWith('.tgz'))
+        sums.push(corrupt ? `${sha('other')}  ${line.split('  ')[1]}` : line);
+    }
   }
-  const script = readFileSync(join(root, 'install.sh'));
-  files.set(`${prefix}/install.sh`, script);
-  sums.push(`${sha(script)}  install.sh`);
+  for (const name of ['install.sh', 'install.ps1'])
+    files.set(`${prefix}/${name}`, readFileSync(join(root, name)));
   files.set(`${prefix}/SHA256SUMS`, `${sums.join('\n')}\n`);
   return `${base}${prefix}`;
 }
@@ -71,11 +89,11 @@ function nodeDist(prefix, { corrupt = false } = {}) {
   });
   writeFileSync(
     join(dir, name, 'bin', 'npm'),
-    `#!/bin/sh\nprintf '%s\\n' "$*" >> "$FAKE_NPM_LOG"\npwd >> "$FAKE_NPM_LOG"\n[ -z "$FAKE_NPM_FAIL" ] || { echo "$FAKE_NPM_FAIL" >&2; exit 1; }\nmkdir -p node_modules\n`,
+    `#!/bin/sh\nprintf '%s\\n' "$*" >> "$FAKE_NPM_LOG"\n[ -z "$FAKE_NPM_FAIL" ] || { echo "$FAKE_NPM_FAIL" >&2; exit 1; }\nmkdir -p node_modules\n`,
     { mode: 0o755 }
   );
-  tar(dir, ['cJf', `${name}.tar.xz`, name]);
-  const archive = readFileSync(join(dir, `${name}.tar.xz`));
+  tar(dir, ['czf', `${name}.tar.gz`, name]);
+  const archive = readFileSync(join(dir, `${name}.tar.gz`));
   files.set(
     `${prefix}/index.json`,
     JSON.stringify([
@@ -84,38 +102,26 @@ function nodeDist(prefix, { corrupt = false } = {}) {
       { version: 'v22.20.0', lts: 'Jod' },
     ])
   );
-  files.set(`${prefix}/${NODE}/${name}.tar.xz`, archive);
+  files.set(`${prefix}/${NODE}/${name}.tar.gz`, archive);
   files.set(
     `${prefix}/${NODE}/SHASUMS256.txt`,
-    `${sha('x')}  node-${NODE}-win-x64.zip\n${corrupt ? sha('y') : sha(archive)}  ${name}.tar.xz\n`
+    `${sha('x')}  node-${NODE}-win-x64.zip\n${corrupt ? sha('y') : sha(archive)}  ${name}.tar.gz\n`
   );
   return `${base}${prefix}`;
 }
 
 function setup() {
   const home = temp('home');
-  const log = join(home, 'npm.log');
   return {
     home,
-    log,
+    log: join(home, 'npm.log'),
     data: join(home, '.local', 'share', 'slicc-audio'),
     bin: join(home, '.local', 'bin'),
-    env: { HOME: home, PATH: sys, FAKE_NPM_LOG: log, TMPDIR: temp('tmp') },
+    env: { HOME: home, PATH: sys, FAKE_NPM_LOG: join(home, 'npm.log'), TMPDIR: temp('tmp') },
   };
 }
 
-function sh(args, env, file = join(root, 'install.sh')) {
-  return new Promise((ok) => {
-    const child = spawn(join(sys, 'sh'), [file, ...args], { env });
-    let stdout = '';
-    let stderr = '';
-    child.stdout.on('data', (c) => (stdout += c));
-    child.stderr.on('data', (c) => (stderr += c));
-    child.on('close', (code) => ok({ code, stdout, stderr }));
-  });
-}
-
-function launch(cmd, args, env) {
+function spawned(cmd, args, env) {
   return new Promise((ok) => {
     const child = spawn(cmd, args, { env });
     let stdout = '';
@@ -126,17 +132,40 @@ function launch(cmd, args, env) {
   });
 }
 
+const sh = (args, env) => spawned(join(sys, 'sh'), [join(root, 'install.sh'), ...args], env);
+const installed = (version, dir) =>
+  COMMANDS.map((cmd) => `${cmd} ${version} installed to ${join(dir, cmd)}\n`).join('');
+
 const v100 = release('1.0.0');
 const v110 = release('1.1.0');
-const old = publish('/v1.0.0', [['1.0.0', v100]]);
-const latest = publish('/latest', [['1.1.0', v110]]);
-const both = publish('/both', [
-  ['1.1.0', v110],
-  ['1.0.0', v100],
-]);
-const bad = publish('/bad', [['1.2.0', release('1.2.0')]], { corrupt: true });
+const old = publish('/v1.0.0', [v100]);
+const latest = publish('/latest', [v110]);
+const both = publish('/both', [v110, v100]);
+const bad = publish('/bad', [release('1.2.0')], { corrupt: true });
+const legacy = publish('/legacy', [release('0.9.0', { old: true })]);
 const dist = nodeDist('/node');
 const badDist = nodeDist('/badnode', { corrupt: true });
+
+describe('scripts/assets.mjs', () => {
+  it('names the tarball slicc-audio-<version>.tgz, and SHA256SUMS covers it and both installers', () => {
+    const sums = readFileSync(join(v110, 'SHA256SUMS'), 'utf8');
+    const tgz = readFileSync(join(v110, 'slicc-audio-1.1.0.tgz'));
+    assert.equal(
+      sums,
+      `${sha(tgz)}  slicc-audio-1.1.0.tgz\n${sha(readFileSync(join(root, 'install.sh')))}  install.sh\n${sha(readFileSync(join(root, 'install.ps1')))}  install.ps1\n`
+    );
+    assert.ok(!existsSync(join(v110, 'ai-ecoverse-slicc-audio-1.1.0.tgz')));
+    assert.equal(
+      spawnSync(process.execPath, [join(root, 'scripts', 'assets.mjs'), v110, 'nope']).status,
+      2
+    );
+    assert.equal(
+      spawnSync(process.execPath, [join(root, 'scripts', 'assets.mjs'), temp('empty'), '1.0.0'])
+        .status,
+      1
+    );
+  });
+});
 
 describe('install.sh', () => {
   it('downloads Node when none is on PATH, installs the latest release and its launchers', async () => {
@@ -150,36 +179,36 @@ describe('install.sh', () => {
     assert.equal(r.code, 0, r.stderr);
     assert.equal(
       r.stdout,
-      `slicc-audio 1.1.0 installed to ${t.bin}\nAdd ${t.bin} to your PATH: export PATH="${t.bin}:$PATH"\n`
+      `${installed('1.1.0', t.bin)}Add ${t.bin} to your PATH: export PATH="${t.bin}:$PATH"\n`
     );
-    assert.match(r.stderr, /no Node 24\+ found; downloading it/);
+    assert.match(r.stderr, /install\.sh: no Node 24 or later on PATH, downloading it/);
     assert.deepEqual(hits, [
       '/node/index.json',
       `/node/${NODE}/SHASUMS256.txt`,
-      `/node/${NODE}/node-${NODE}-${os}-${arch}.tar.xz`,
+      `/node/${NODE}/node-${NODE}-${os}-${arch}.tar.gz`,
       '/latest/SHA256SUMS',
       '/latest/slicc-audio-1.1.0.tgz',
     ]);
-    assert.ok(existsSync(join(t.data, 'node', 'bin', 'node')));
-    assert.equal(readlinkSync(join(t.data, 'current')), '1.1.0');
-    assert.deepEqual(JSON.parse(readFileSync(join(t.data, 'install.json'), 'utf8')), {
-      version: '1.1.0',
-      dir: t.bin,
-    });
-    assert.deepEqual(readFileSync(t.log, 'utf8').split('\n').slice(0, 1), [
-      'install --omit=dev --ignore-scripts --no-audit --no-fund',
-    ]);
-    for (const cmd of ['scsay', 'schear', 'scplay', 'scchime']) {
+    const node = join(t.data, 'node', 'bin', 'node');
+    assert.ok(existsSync(node));
+    assert.deepEqual(readdirSync(t.data).sort(), ['1.1.0', 'node']);
+    assert.equal(
+      readFileSync(t.log, 'utf8'),
+      'install --omit=dev --ignore-scripts --no-audit --no-fund\n'
+    );
+    assert.ok(existsSync(join(t.data, '1.1.0', 'node_modules')));
+    for (const cmd of COMMANDS) {
+      const variable = `${cmd.toUpperCase()}_INSTALL_DIR`;
       assert.equal(
         readFileSync(join(t.bin, cmd), 'utf8'),
-        `#!/bin/sh\nexec "${join(t.data, 'node', 'bin', 'node')}" "${join(t.data, 'current', 'host', `${cmd}.mjs`)}" "$@"\n`
+        `#!/bin/sh\n${variable}='${t.bin}'\nexport ${variable}\nexec '${node}' '${join(t.data, '1.1.0', 'host', `${cmd}.mjs`)}' "$@"\n`
       );
-      const v = await launch(join(t.bin, cmd), ['--version'], t.env);
-      assert.equal(v.stdout, `${cmd} 1.1.0\n`);
+      const v = await spawned(join(t.bin, cmd), ['--version'], t.env);
+      assert.equal(v.stdout, '1.1.0\n');
     }
   });
 
-  it('installs --version into --dir with the Node on PATH, and replaces older versions', async () => {
+  it('installs --version into --dir with the Node on PATH, and keeps the other versions', async () => {
     const t = setup();
     const fake = temp('node');
     writeFileSync(join(fake, 'node'), `#!/bin/sh\nexec "${process.execPath}" "$@"\n`, {
@@ -190,34 +219,38 @@ describe('install.sh', () => {
       `#!/bin/sh\nprintf 'path npm %s\\n' "$*" >> "$FAKE_NPM_LOG"\n`,
       { mode: 0o755 }
     );
-    const dir = join(t.home, 'tools');
-    const env = {
-      ...t.env,
-      PATH: `${dir}:${fake}:${sys}`,
-      SLICC_NODE_DIST_BASE: `${base}/nowhere`,
-    };
+    const dir = join(t.home, "it's tools");
+    const env = { ...t.env, PATH: `${fake}:${sys}`, SLICC_NODE_DIST_BASE: `${base}/nowhere` };
     hits.length = 0;
-    let r = await sh(['--version', '1.0.0', '--dir', dir], {
+    let r = await sh(['--version', 'v1.0.0', '--dir', dir], {
       ...env,
       SLICC_INSTALL_BASE_URL: both,
     });
     assert.equal(r.code, 0, r.stderr);
-    assert.equal(r.stdout, `slicc-audio 1.0.0 installed to ${dir}\n`);
+    assert.equal(r.stdout.split('\n')[0], `scsay 1.0.0 installed to ${join(dir, 'scsay')}`);
     assert.deepEqual(hits, ['/both/SHA256SUMS', '/both/slicc-audio-1.0.0.tgz']);
-    assert.match(readFileSync(join(dir, 'scsay'), 'utf8'), new RegExp(`exec "${fake}/node"`));
+    assert.match(readFileSync(join(dir, 'scsay'), 'utf8'), new RegExp(`exec '${fake}/node'`));
+    assert.match(
+      readFileSync(join(dir, 'scsay'), 'utf8'),
+      /^SCSAY_INSTALL_DIR='.*it'\\''s tools'$/m
+    );
     assert.equal(
       readFileSync(t.log, 'utf8'),
       'path npm install --omit=dev --ignore-scripts --no-audit --no-fund\n'
     );
-    r = await sh(['--dir', dir], { ...env, SLICC_INSTALL_BASE_URL: both });
-    assert.equal(r.stdout, `slicc-audio 1.1.0 installed to ${dir}\n`);
-    assert.deepEqual(readdirSync(t.data).sort(), ['1.1.0', 'current', 'install.json']);
+    r = await sh([`--dir=${dir}`], { ...env, SLICC_INSTALL_BASE_URL: both });
+    assert.equal(
+      r.stdout,
+      installed('1.1.0', dir) + `Add ${dir} to your PATH: export PATH="${dir}:$PATH"\n`
+    );
+    assert.deepEqual(readdirSync(t.data).sort(), ['1.0.0', '1.1.0']);
   });
 
-  it('uses the Node it installed before, and replaces a Node older than 24', async () => {
+  it("accepts an older release's <cmd> <version>, and reuses the Node it installed before", async () => {
     const t = setup();
-    let r = await sh([], { ...t.env, SLICC_INSTALL_BASE_URL: latest, SLICC_NODE_DIST_BASE: dist });
+    let r = await sh([], { ...t.env, SLICC_INSTALL_BASE_URL: legacy, SLICC_NODE_DIST_BASE: dist });
     assert.equal(r.code, 0, r.stderr);
+    assert.equal(r.stdout.split('\n')[0], `scsay 0.9.0 installed to ${join(t.bin, 'scsay')}`);
     const elderly = temp('old');
     writeFileSync(join(elderly, 'node'), '#!/bin/sh\necho v20.1.0\n', { mode: 0o755 });
     hits.length = 0;
@@ -229,15 +262,6 @@ describe('install.sh', () => {
     });
     assert.equal(r.code, 0, r.stderr);
     assert.deepEqual(hits, ['/latest/SHA256SUMS', '/latest/slicc-audio-1.1.0.tgz']);
-    const u = setup();
-    r = await sh([], {
-      ...u.env,
-      PATH: `${elderly}:${sys}`,
-      SLICC_INSTALL_BASE_URL: latest,
-      SLICC_NODE_DIST_BASE: dist,
-    });
-    assert.equal(r.code, 0, r.stderr);
-    assert.ok(existsSync(join(u.data, 'node', 'bin', 'node')));
   });
 
   it('refuses a tarball or a Node that fails its checksum, and reports npm failures', async () => {
@@ -250,7 +274,9 @@ describe('install.sh', () => {
     assert.equal(r.code, 1);
     assert.match(
       r.stderr,
-      new RegExp(`slicc-audio: checksum mismatch for node-${NODE}-${os}-${arch}\\.tar\\.xz\\n`)
+      new RegExp(
+        `install\\.sh: checksum mismatch for node-${NODE}-${os}-${arch}\\.tar\\.gz: expected `
+      )
     );
     assert.ok(!existsSync(join(t.data, 'node')));
     t = setup();
@@ -258,7 +284,7 @@ describe('install.sh', () => {
     assert.equal(r.code, 1);
     assert.match(
       r.stderr,
-      /slicc-audio: checksum mismatch for slicc-audio-1\.2\.0\.tgz\n {2}expected: /
+      /install\.sh: checksum mismatch for slicc-audio-1\.2\.0\.tgz: expected /
     );
     assert.ok(!existsSync(join(t.data, '1.2.0')));
     assert.ok(!existsSync(join(t.bin, 'scsay')));
@@ -268,9 +294,10 @@ describe('install.sh', () => {
       SLICC_INSTALL_BASE_URL: latest,
       SLICC_NODE_DIST_BASE: dist,
     });
-    assert.deepEqual(
-      [r.code, r.stderr.split('\n').at(-2)],
-      [1, 'slicc-audio: no checksum for slicc-audio-9.9.9.tgz in SHA256SUMS']
+    assert.equal(r.code, 1);
+    assert.match(
+      r.stderr,
+      /install\.sh: could not download .*\/latest\/slicc-audio-9\.9\.9\.tgz\n$/
     );
     t = setup();
     r = await sh([], {
@@ -279,7 +306,10 @@ describe('install.sh', () => {
       SLICC_NODE_DIST_BASE: dist,
     });
     assert.equal(r.code, 1);
-    assert.match(r.stderr, new RegExp(`slicc-audio: cannot download ${base}/gone/SHA256SUMS\\n$`));
+    assert.match(
+      r.stderr,
+      new RegExp(`install\\.sh: could not download ${base}/gone/SHA256SUMS\\n$`)
+    );
     t = setup();
     r = await sh([], {
       ...t.env,
@@ -288,24 +318,29 @@ describe('install.sh', () => {
       SLICC_NODE_DIST_BASE: dist,
     });
     assert.equal(r.code, 1);
-    assert.match(r.stderr, /registry down\nslicc-audio: npm install failed\n$/);
+    assert.match(
+      r.stderr,
+      /registry down\ninstall\.sh: npm install failed in slicc-audio-1\.1\.0\.tgz\n$/
+    );
     assert.deepEqual(readdirSync(t.data), ['node']);
   });
 
-  it('prints its usage, and exits 2 for an unknown option', async () => {
+  it('prints its usage, and exits 2 with it for a bad option', async () => {
     const t = setup();
     let r = await sh(['--help'], t.env);
     assert.equal(r.code, 0);
-    assert.match(r.stdout, /^Usage: sh -s -- \[--version VERSION\] \[--dir DIR\] \[--help\]\n/);
-    r = await sh(['--force'], t.env);
-    assert.deepEqual(
-      [r.code, r.stdout, r.stderr],
-      [2, '', 'slicc-audio: unknown option: --force\n']
-    );
-    r = await sh(['--dir'], t.env);
-    assert.deepEqual([r.code, r.stderr], [2, 'slicc-audio: --dir needs a value\n']);
-    r = await sh(['--version'], t.env);
-    assert.deepEqual([r.code, r.stderr], [2, 'slicc-audio: --version needs a value\n']);
+    assert.match(r.stdout, /^usage: install\.sh \[--version VERSION\] \[--dir DIR\] \[--help\]\n/);
+    for (const [args, message] of [
+      [['--force'], 'unknown option --force'],
+      [['--dir'], '--dir needs a value'],
+      [['--version'], '--version needs a value'],
+      [['--dir='], '--dir needs a value'],
+    ]) {
+      r = await sh(args, t.env);
+      assert.equal(r.code, 2, args.join(' '));
+      assert.equal(r.stdout, '');
+      assert.match(r.stderr, new RegExp(`^install\\.sh: ${message}\\nusage: install\\.sh `));
+    }
   });
 });
 
@@ -316,40 +351,38 @@ describe('--upgrade', () => {
     const env = { ...t.env, SLICC_NODE_DIST_BASE: dist };
     let r = await sh(['--version', '1.0.0', '--dir', dir], { ...env, SLICC_INSTALL_BASE_URL: old });
     assert.equal(r.code, 0, r.stderr);
-    for (const cmd of ['scsay', 'schear', 'scplay', 'scchime']) {
-      r = await launch(join(dir, cmd), ['--version'], env);
-      assert.equal(r.stdout, `${cmd} 1.0.0\n`);
+    for (const cmd of COMMANDS) {
+      r = await spawned(join(dir, cmd), ['--version'], env);
+      assert.equal(r.stdout, '1.0.0\n');
     }
-    r = await launch(join(dir, 'scsay'), ['--upgrade'], { ...env, SLICC_INSTALL_BASE_URL: latest });
-    assert.deepEqual([r.code, r.stdout], [0, 'scsay: 1.0.0 → 1.1.0\n'], r.stderr);
-    assert.ok(!existsSync(join(t.data, '1.0.0')));
-    assert.deepEqual(JSON.parse(readFileSync(join(t.data, 'install.json'), 'utf8')), {
-      version: '1.1.0',
-      dir,
+    r = await spawned(join(dir, 'scsay'), ['--upgrade'], {
+      ...env,
+      SLICC_INSTALL_BASE_URL: latest,
     });
-    assert.ok(lstatSync(join(t.data, 'current')).isSymbolicLink());
-    r = await launch(join(dir, 'scchime'), ['--upgrade'], {
+    assert.deepEqual([r.code, r.stdout], [0, 'scsay: 1.0.0 → 1.1.0\n'], r.stderr);
+    assert.match(readFileSync(join(dir, 'schear'), 'utf8'), /1\.1\.0\/host\/schear\.mjs/);
+    r = await spawned(join(dir, 'scchime'), ['--upgrade'], {
       ...env,
       SLICC_INSTALL_BASE_URL: latest,
     });
     assert.deepEqual([r.code, r.stdout], [0, 'scchime: already up to date (1.1.0)\n'], r.stderr);
-    r = await launch(join(dir, 'schear'), ['--upgrade'], { ...env, SLICC_INSTALL_BASE_URL: bad });
+    r = await spawned(join(dir, 'schear'), ['--upgrade'], { ...env, SLICC_INSTALL_BASE_URL: bad });
     assert.equal(r.code, 1);
     assert.equal(r.stdout, '');
-    assert.match(r.stderr, /^slicc-audio: checksum mismatch for slicc-audio-1\.2\.0\.tgz\n/);
-    r = await launch(join(dir, 'scplay'), ['--upgrade'], {
+    assert.match(r.stderr, /^install\.sh: checksum mismatch for slicc-audio-1\.2\.0\.tgz/);
+    r = await spawned(join(dir, 'scplay'), ['--upgrade'], {
       ...env,
       SLICC_INSTALL_BASE_URL: `${base}/gone`,
     });
     assert.deepEqual(
       [r.code, r.stderr],
-      [1, `scplay: cannot download ${base}/gone/install.sh: HTTP 404\n`]
+      [1, `scplay: could not download ${base}/gone/install.sh: HTTP 404\n`]
     );
-    r = await launch(join(dir, 'scplay'), ['--upgrade'], {
+    r = await spawned(join(dir, 'scplay'), ['--upgrade'], {
       ...env,
       SLICC_INSTALL_BASE_URL: 'http://127.0.0.1:9',
     });
     assert.equal(r.code, 1);
-    assert.match(r.stderr, /^scplay: cannot download http:\/\/127\.0\.0\.1:9\/install\.sh: /);
+    assert.match(r.stderr, /^scplay: could not download http:\/\/127\.0\.0\.1:9\/install\.sh: /);
   });
 });

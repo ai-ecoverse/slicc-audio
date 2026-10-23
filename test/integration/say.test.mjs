@@ -2,15 +2,7 @@ import assert from 'node:assert/strict';
 import { join } from 'node:path';
 import { beforeEach, describe, it } from 'node:test';
 import { scsay } from '../../host/say.mjs';
-import {
-  fakeServer,
-  missingModule,
-  mkdirSync,
-  readFileSync,
-  run,
-  temp,
-  writeFileSync,
-} from './fakes.mjs';
+import { fakeServer, missingModule, readFileSync, run, temp, writeFileSync } from './fakes.mjs';
 
 const unix = ['spd-say', 'espeak-ng', 'espeak', 'paplay'];
 const USAGE =
@@ -21,18 +13,15 @@ beforeEach(() => server.reset());
 
 const ollama = () => ({ OLLAMA_HOST: `${server.url}/ollama` });
 
-function cachedVoices(names) {
-  const hub = temp('hub');
-  const dir = join(
-    hub,
-    'models--onnx-community--Kokoro-82M-v1.0-ONNX',
-    'snapshots',
-    'abc',
-    'voices'
-  );
-  mkdirSync(dir, { recursive: true });
-  for (const name of names) writeFileSync(join(dir, `${name}.bin`), '');
-  return hub;
+function voicesOf(names) {
+  const langs = { a: 'en-US', b: 'en-GB', e: 'es-ES' };
+  return names.map((id) => ({
+    id,
+    model: 'onnx-community/Kokoro-82M-v1.0-ONNX',
+    engine: 'kokoro',
+    language: langs[id[0]],
+    gender: id[1] === 'f' ? 'female' : 'male',
+  }));
 }
 
 describe('scsay on macOS', () => {
@@ -441,6 +430,7 @@ describe('scsay engines', () => {
     assert.deepEqual(
       server.requests.map((q) => [q.tier, q.body]),
       [
+        ['ortllama', undefined],
         ['ortllama', { input: 'hi', voice: 'x', speed: 2, response_format: 'wav', model: 'other' }],
         ['ollama', { model: 'other', input: 'hi', voice: 'x', response_format: 'wav', speed: 2 }],
       ]
@@ -534,17 +524,35 @@ describe('scsay engines', () => {
   });
 
   it('picks Kokoro voices from -v and -l, and writes files with them', async () => {
-    server.models.ortllama = ['speech'];
-    const hub = cachedVoices(['af_heart', 'af_bella', 'bf_emma', 'ef_dora']);
+    server.models.ortllama = ['speech', 'gradium/phonon'];
+    server.voices = voicesOf(['af_bella', 'af_heart', 'bf_emma', 'ef_dora']);
     const dir = temp('k');
     let r = await run(scsay, {
       argv: ['--engine=ortllama', '-v', 'BEL', '-i', '-o', join(dir, 'x.wav'), 'hi'],
       ortllama: server.ortllama,
-      env: { HF_HUB_CACHE: hub },
     });
     assert.equal(r.code, 0, r.stderr);
     assert.equal(r.stdout, '');
-    assert.equal(server.requests[0].body.voice, 'af_bella');
+    assert.deepEqual(
+      server.requests.map((q) => [q.route, q.query, q.body?.voice]),
+      [
+        ['/v1/audio/voices', '', undefined],
+        ['/v1/audio/speech', '', 'af_bella'],
+      ]
+    );
+    server.requests = [];
+    r = await run(scsay, {
+      argv: ['--engine=ortllama', '--model', 'gradium/phonon', '-v', 'bel', '-o', '-', 'hi'],
+      ortllama: server.ortllama,
+    });
+    assert.equal(r.code, 0, r.stderr);
+    assert.deepEqual(
+      server.requests.map((q) => [q.route, q.query, q.body?.voice]),
+      [
+        ['/v1/audio/voices', '?model=gradium%2Fphonon', undefined],
+        ['/v1/audio/speech', '', 'bel'],
+      ]
+    );
     assert.equal(readFileSync(join(dir, 'x.wav')).toString('ascii', 0, 4), 'RIFF');
     for (const [lang, voice] of [
       ['en-GB', 'bf_emma'],
@@ -570,7 +578,6 @@ describe('scsay engines', () => {
     r = await run(scsay, {
       argv: ['--engine=ortllama', '-v', 'zz', 'hi'],
       ortllama: server.ortllama,
-      env: { HF_HUB_CACHE: hub },
     });
     assert.deepEqual(
       [r.code, r.stderr],
@@ -591,7 +598,6 @@ describe('scsay engines', () => {
       argv: ['--list'],
       names: [],
       ortllama: server.ortllama,
-      env: { HF_HUB_CACHE: hub },
     });
     assert.equal(
       r.stdout,
@@ -601,7 +607,6 @@ describe('scsay engines', () => {
       argv: ['-v', '?'],
       names: [],
       ortllama: server.ortllama,
-      env: { HF_HUB_CACHE: hub },
     });
     assert.match(r.stdout, /^af_bella {12}en_US {4}# Hello, my name is af_bella\.\n/);
     server.models.ollama = ['phonon'];
@@ -712,5 +717,48 @@ describe('scsay engines', () => {
     r = await run(scsay, { argv: ['--warmup'], names: [], ortllama: missingModule });
     assert.equal(r.code, 1);
     assert.match(r.stderr, /^scsay: no speech engine available\n/);
+  });
+
+  it('sends long text in pieces of at most 4096 characters and joins the audio', async () => {
+    server.models = { ortllama: ['speech'], ollama: ['phonon'] };
+    server.inputs = [];
+    const sentence = 'This sentence is part of a long article. ';
+    const text = sentence.repeat(250);
+    const dir = temp('long');
+    let r = await run(scsay, {
+      argv: ['--engine=ortllama', '-o', join(dir, 'a.wav'), text],
+      ortllama: server.ortllama,
+    });
+    assert.equal(r.code, 0, r.stderr);
+    assert.ok(server.inputs.length >= 3);
+    assert.ok(server.inputs.every((n) => n <= 4096));
+    assert.equal(
+      server.inputs.reduce((a, b) => a + b, 0),
+      text.length
+    );
+    const wav = readFileSync(join(dir, 'a.wav'));
+    assert.equal(wav.readUInt32LE(40), server.inputs.length * 2400 * 2);
+    server.inputs = [];
+    r = await run(scsay, {
+      argv: ['--engine=ollama', 'x'.repeat(9000)],
+      names: ['paplay'],
+      env: ollama(),
+    });
+    assert.equal(r.code, 0, r.stderr);
+    assert.deepEqual(server.inputs, [4096, 4096, 808]);
+    server.inputs = undefined;
+  });
+
+  it('reads -- --upgrade as text, and hides its install directory from the tools', async () => {
+    const r = await run(scsay, {
+      argv: ['--', '--upgrade'],
+      names: ['espeak-ng'],
+      env: { SCSAY_INSTALL_DIR: '/x', SCHEAR_INSTALL_DIR: '/y' },
+    });
+    assert.equal(r.code, 0, r.stderr);
+    assert.deepEqual(
+      [r.calls[0].stdin, r.calls[0].env.SCSAY_INSTALL_DIR, r.calls[0].env.SCHEAR_INSTALL_DIR],
+      ['--upgrade', undefined, undefined]
+    );
   });
 });
