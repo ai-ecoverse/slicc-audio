@@ -4,7 +4,6 @@ import { Failure, number, parseArgs, scratch, lang as tag, UsageError, write } f
 import {
   checked,
   listed,
-  loadModule,
   loadOrtllama,
   loopback,
   models,
@@ -12,6 +11,8 @@ import {
   ollamaBase,
   ortllamaMissing,
   ortllamaStatus,
+  ortllamaTools,
+  serve,
   status,
   transcription,
   Unavailable,
@@ -161,8 +162,7 @@ const engines = {
   },
   ortllama: {
     async open(ctx) {
-      const mod = await loadModule(ctx.ortllama);
-      const server = await mod.startServer({ port: 0, host: '127.0.0.1', env: ctx.env });
+      const server = await serve(ctx.ortllama, ctx.env);
       try {
         const state = await ortllamaState(ctx, server.url);
         if (state.missing) throw new Unavailable(`model not cached (${state.missing})`);
@@ -191,7 +191,7 @@ const engines = {
       }
     },
     async tools(ctx) {
-      await loadModule(ctx.ortllama);
+      await ortllamaTools(ctx.ortllama, ctx.env);
     },
     async warmup(ctx) {
       const state = await withOrtllama(ctx.ortllama, ctx.env, (base) => ortllamaState(ctx, base));

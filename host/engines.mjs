@@ -1,4 +1,6 @@
-import { exec, Failure, lookup, words, write } from './common.mjs';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { exec, Failure, lookup, root, words, write } from './common.mjs';
 
 export class Unavailable extends Error {
   constructor(reason, status = reason) {
@@ -7,7 +9,47 @@ export class Unavailable extends Error {
   }
 }
 
-export const loadOrtllama = () => import('@ai-ecoverse/slicc-ortllama');
+const ORTLLAMA = '@ai-ecoverse/slicc-ortllama';
+
+export async function loadOrtllama() {
+  const mod = await import(ORTLLAMA);
+  const index = import.meta.resolve(ORTLLAMA);
+  const manifest = JSON.parse(readFileSync(new URL('../package.json', index), 'utf8'));
+  const backend = (path) => async (options) =>
+    (await import(new URL(path, index))).loadBackend(options);
+  return {
+    startServer: mod.startServer,
+    createRuntime: mod.createRuntime,
+    backends: [backend('./ort/node.js'), backend('./ort/web.js')],
+    onnx: manifest.peerDependencies?.['onnxruntime-node'],
+  };
+}
+
+export function runtimeFix(onnx, dir = fileURLToPath(root).replace(/[\\/]$/, '')) {
+  const prefix = /^[\w@%+=:,./\\-]+$/.test(dir) ? dir : `"${dir}"`;
+  const spec = onnx ? `onnxruntime-node@${onnx}` : 'onnxruntime-node';
+  return `npm install --prefix ${prefix} --no-save --ignore-scripts ${spec}`;
+}
+
+export async function ortRuntime(mod, env) {
+  for (const load of mod.backends ?? []) {
+    try {
+      const backend = await load({ env });
+      return mod.createRuntime({ env, backend: async () => backend });
+    } catch {}
+  }
+  throw new Unavailable(`no ONNX Runtime (${runtimeFix(mod.onnx)})`);
+}
+
+export async function serve(load, env) {
+  const mod = await loadModule(load);
+  const runtime = await ortRuntime(mod, env);
+  return mod.startServer({ port: 0, host: '127.0.0.1', env, runtime });
+}
+
+export async function ortllamaTools(load, env) {
+  await ortRuntime(await loadModule(load), env);
+}
 
 const KOKORO_LANGS = {
   'en-US': 'af_heart',
@@ -122,8 +164,7 @@ export async function loadModule(load) {
 }
 
 export async function withOrtllama(load, env, fn) {
-  const mod = await loadModule(load);
-  const server = await mod.startServer({ port: 0, host: '127.0.0.1', env });
+  const server = await serve(load, env);
   try {
     return await fn(server.url);
   } finally {
