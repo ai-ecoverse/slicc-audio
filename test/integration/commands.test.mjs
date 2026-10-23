@@ -653,6 +653,45 @@ describe('hear', () => {
     }
   });
 
+  it('never records the default microphone when -d names another', async () => {
+    assert.deepEqual(await sh('hear --engine platform -d usb'), {
+      status: 2,
+      stdout: '',
+      stderr: `hear: -d: Web Speech can't pick a microphone (-d needs --engine ortllama)\n${HEAR_USAGE('hear')}`,
+    });
+    world.hear =
+      'ortllama: no server at http://11435.kernel.localhost (x)\nplatform: ready (Web Speech)\n';
+    assert.deepEqual(await sh('hear -n usb'), {
+      status: 1,
+      stdout: '',
+      stderr:
+        'hear: no recognition engine available\n  ortllama: no server at http://11435.kernel.localhost (x)\n',
+    });
+    assert.deepEqual(requests(), []);
+    assert.equal((await sh('hear --engine platform -d usb -i /tmp/clip.wav')).status, 1);
+  });
+
+  it('measures the -x deadline in milliseconds', async () => {
+    world.transcripts = ['go on\n'];
+    const answer = page.answer;
+    page.answer = async (call) => {
+      if (call.kind === 'audio.record') await new Promise((resolve) => setTimeout(resolve, 200));
+      return answer(call);
+    };
+    try {
+      assert.equal((await sh('hear -x stop -T 1')).status, 0);
+    } finally {
+      page.answer = answer;
+    }
+    const seconds = requests()
+      .filter(([kind]) => kind === 'audio.record')
+      .map(([, options]) => options.seconds);
+    assert.ok(seconds.length >= 2, String(seconds));
+    assert.equal(seconds[0], 1);
+    for (let i = 1; i < seconds.length; i++)
+      assert.ok(seconds[i] < seconds[i - 1], String(seconds));
+  });
+
   it('falls back to Web Speech on the microphone, unless --device', async () => {
     world.hear =
       'ortllama: no server at http://11435.kernel.localhost (x)\nplatform: ready (Web Speech)\n';

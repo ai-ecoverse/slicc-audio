@@ -85,7 +85,7 @@ export function createAudio({
       if (options.engine === 'webspeech') return recognize(options, signal);
       if (!bytes.length) return '';
       const format = FORMATS[options.format] ?? 'json';
-      const res = checked(await transcription(bytes, { ...options, format }));
+      const res = checked(await transcription(bytes, { ...options, format }, signal));
       return transcript(res, options.format);
     },
   };

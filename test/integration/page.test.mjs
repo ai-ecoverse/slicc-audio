@@ -537,6 +537,63 @@ describe('audio.say', () => {
   });
 });
 
+describe('cancelling ortllama requests', () => {
+  it('aborts the speech fetch, and posts no later chunk, when the signal fires', async () => {
+    const p = page({ server: fakeServer({ slow: 500 }) });
+    const stop = new AbortController();
+    setTimeout(() => stop.abort(), 20);
+    const long = `${'word '.repeat(900)}end. `.repeat(2);
+    await refusal(
+      p.ask(
+        'audio.say',
+        {
+          engine: 'kokoro',
+          output: { format: 'WAVE', endian: 'LE', kind: 'I', bits: 16, channels: 1 },
+        },
+        long,
+        stop.signal
+      ),
+      'AbortError'
+    );
+    const posted = p.server.requests.filter((r) => r.path === '/v1/audio/speech');
+    assert.equal(posted.length, 1);
+    assert.equal(posted[0].aborted, true);
+  });
+
+  it('aborts the speech fetch of a line being spoken', async () => {
+    const p = page({ server: fakeServer({ slow: 500 }) });
+    const stop = new AbortController();
+    const reply = await p.audio.handle({
+      kind: 'audio.say',
+      options: { engine: 'kokoro' },
+      body: body('Hello.'),
+      signal: stop.signal,
+    });
+    setTimeout(() => stop.abort(), 20);
+    await assert.rejects(read(reply), { name: 'AbortError' });
+    assert.equal(p.server.requests.find((r) => r.path === '/v1/audio/speech').aborted, true);
+  });
+
+  it('aborts the transcription fetch when the signal fires', async () => {
+    const p = page({ server: fakeServer({ slow: 500 }) });
+    const stop = new AbortController();
+    setTimeout(() => stop.abort(), 20);
+    await refusal(
+      p.ask('audio.transcribe', { engine: 'whisper' }, tone(), stop.signal),
+      'AbortError'
+    );
+    assert.equal(p.server.requests.at(-1).aborted, true);
+  });
+
+  it('still answers a slow server when nobody aborts', async () => {
+    const p = page({ server: fakeServer({ slow: 5 }) });
+    assert.equal(
+      await p.text('audio.transcribe', { engine: 'whisper' }, tone()),
+      'Hello there.\nGeneral Kenobi.\n'
+    );
+  });
+});
+
 describe('audio.voices', () => {
   it('lists Kokoro and Web Speech voices as name, language and default', async () => {
     const p = page();

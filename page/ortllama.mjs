@@ -4,11 +4,12 @@ import { joined, wav16 } from './wav.mjs';
 export function ortllamaOf({ scope, base }) {
   const offline = `no server at ${base} (pnpm add -g @ai-ecoverse/slicc-ortllama, then ortllama serve --detach)`;
 
-  async function call(path, init) {
+  async function call(path, init = {}) {
     let res;
     try {
       res = await scope.fetch(`${base}${path}`, init);
     } catch {
+      if (init.signal?.aborted) throw named('AbortError', 'stopped');
       return { offline: true };
     }
     const bytes = new Uint8Array(await res.arrayBuffer());
@@ -29,20 +30,21 @@ export function ortllamaOf({ scope, base }) {
 
   const hint = (message) => /hf download[^\n]*/.exec(message)?.[0] ?? message;
 
-  const speech = (request) =>
+  const speech = (request, signal) =>
     call('/v1/audio/speech', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(request),
+      signal,
     });
 
-  function transcription(bytes, { model, language, format }) {
+  function transcription(bytes, { model, language, format }, signal) {
     const form = new scope.FormData();
     form.append('file', new scope.Blob([bytes]), 'audio');
     if (model) form.append('model', model);
     if (language) form.append('language', language.split('-')[0]);
     form.append('response_format', format);
-    return call('/v1/audio/transcriptions', { method: 'POST', body: form });
+    return call('/v1/audio/transcriptions', { method: 'POST', body: form, signal });
   }
 
   const probes = {
@@ -111,10 +113,10 @@ export function ortllamaOf({ scope, base }) {
     return 'af_heart';
   }
 
-  async function synth(text, request) {
+  async function synth(text, request, signal) {
     const parts = chunks(text);
     const wavs = [];
-    for (const input of parts) wavs.push(checked(await speech({ ...request, input })));
+    for (const input of parts) wavs.push(checked(await speech({ ...request, input }, signal)));
     return wavs.length === 1 ? wavs[0] : joined(wavs);
   }
 

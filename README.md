@@ -140,7 +140,7 @@ hear -a | -s | --status | --warmup
 - **The microphone:** without `-i`, `hear` listens until a second of silence after speech, or until `-T` runs out, then prints the transcript. With `-x`, it keeps listening across pauses, printing one line per pause.
 - **`-l lang`, `--locale lang`:** a BCP 47 language tag; the default is Whisper's detection (the Web Speech API takes the browser's language).
 - **`-T seconds`, `-t seconds`, `--timeout seconds`:** the longest it listens, more than 0 and at most 600 (default 30). slicc 6 spelled it `-T` and hear `-t`; both work.
-- **`-d device`, `-n device`, `--input-device-id device`:** the microphone, by an id `hear -a` prints.
+- **`-d device`, `-n device`, `--input-device-id device`:** the microphone, by an id `hear -a` prints. In SLICC only Whisper can record a chosen microphone (the Web Speech API always listens to the browser's default), so `-d` leaves Web Speech out, and `--engine platform` with `-d` exits 2.
 - **`-a`, `--audio-input-devices`, `--devices`:** lists the microphones, one per line, as `<id>\t<label>`.
 - **`-s`, `--supported`:** lists the languages the engine recognizes, one tag per line.
 - **`-x word`, `--exit word`:** stops when a line ends with that word (case-insensitively, ignoring punctuation after it).
