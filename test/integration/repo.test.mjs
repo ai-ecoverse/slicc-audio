@@ -58,9 +58,54 @@ describe('the repository', () => {
     const release = JSON.parse(read('.releaserc.json'));
     assert.deepEqual(release.branches, ['main']);
     assert.equal(release.tagFormat, 'v${version}');
-    assert.ok(release.plugins.includes('@semantic-release/npm'));
-    assert.ok(release.plugins.includes('@semantic-release/github'));
+    const names = release.plugins.map((plugin) => (Array.isArray(plugin) ? plugin[0] : plugin));
+    assert.deepEqual(names, [
+      '@semantic-release/commit-analyzer',
+      '@semantic-release/release-notes-generator',
+      '@semantic-release/npm',
+      '@semantic-release/exec',
+      '@semantic-release/github',
+    ]);
     assert.doesNotMatch(JSON.stringify(release), /npmPublish/);
+  });
+
+  it('attaches the installers, the tarball and SHA256SUMS to every GitHub release', () => {
+    const release = JSON.parse(read('.releaserc.json'));
+    const plugin = (name) => release.plugins.find((p) => Array.isArray(p) && p[0] === name)[1];
+    const assets = plugin('@semantic-release/github').assets.map((asset) => asset.path);
+    assert.deepEqual(assets, [
+      'dist/slicc-audio-*.tgz',
+      'dist/SHA256SUMS',
+      'dist/install.sh',
+      'dist/install.ps1',
+    ]);
+    const cmd = plugin('@semantic-release/exec').prepareCmd;
+    assert.match(cmd, /npm pack --ignore-scripts --pack-destination dist/);
+    assert.match(
+      cmd,
+      /mv dist\/ai-ecoverse-slicc-audio-\$\{nextRelease\.version\}\.tgz dist\/slicc-audio-\$\{nextRelease\.version\}\.tgz/
+    );
+    assert.match(cmd, /cp install\.sh install\.ps1 dist\//);
+    assert.match(
+      cmd,
+      /sha256sum slicc-audio-\$\{nextRelease\.version\}\.tgz install\.sh install\.ps1 > SHA256SUMS$/
+    );
+    assert.ok(read('.gitignore').split('\n').includes('dist/'));
+    assert.ok(read('install.sh').startsWith('#!/bin/sh\n'));
+    assert.match(read('install.ps1'), /^param\(/);
+  });
+
+  it('ships the four host commands, with slicc-ortllama as its only, optional, dependency', () => {
+    assert.deepEqual(pkg.bin, {
+      scsay: 'host/scsay.mjs',
+      schear: 'host/schear.mjs',
+      scplay: 'host/scplay.mjs',
+      scchime: 'host/scchime.mjs',
+    });
+    assert.equal(pkg.dependencies, undefined);
+    assert.deepEqual(Object.keys(pkg.optionalDependencies), ['@ai-ecoverse/slicc-ortllama']);
+    for (const path of Object.values(pkg.bin))
+      assert.ok(read(path).startsWith('#!/usr/bin/env node\n'));
   });
 
   it('fails closed when the shared hooks are missing', () => {
