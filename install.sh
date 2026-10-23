@@ -199,15 +199,17 @@ for cmd in $COMMANDS; do
   [ -f "$EXTRACT/host/$cmd.mjs" ] || die "$TGZ has no host/$cmd.mjs"
 done
 NODE_DIR="$(dirname "$NODE_ABS")"
-if [ -x "$NODE_DIR/npm" ]; then
-  NPM="$NODE_DIR/npm"
-else
-  NPM="$(command -v npm)" || die "no npm next to $NODE_ABS"
-fi
-if ! (cd "$EXTRACT" && PATH="$NODE_DIR:$PATH" "$NPM" install --omit=dev --ignore-scripts --no-audit --no-fund >"$TMP_INSTALL/npm.log" 2>&1); then
-  cat "$TMP_INSTALL/npm.log" >&2
-  rm -rf "$EXTRACT"
-  die "npm install failed in $TGZ"
+if "$NODE_ABS" -e 'const p = require(process.argv[1]); process.exit(Object.keys({ ...p.dependencies, ...p.optionalDependencies }).length ? 0 : 1)' "$EXTRACT/package.json"; then
+  if [ -x "$NODE_DIR/npm" ]; then
+    NPM="$NODE_DIR/npm"
+  else
+    NPM="$(command -v npm)" || { rm -rf "$EXTRACT"; die "no npm next to $NODE_ABS"; }
+  fi
+  if ! (cd "$EXTRACT" && PATH="$NODE_DIR:$PATH" "$NPM" install --omit=dev --ignore-scripts --no-audit --no-fund >"$TMP_INSTALL/npm.log" 2>&1); then
+    cat "$TMP_INSTALL/npm.log" >&2
+    rm -rf "$EXTRACT"
+    die "npm install failed in $TGZ"
+  fi
 fi
 rm -rf "$BUNDLE_DIR"
 mv "$EXTRACT" "$BUNDLE_DIR"

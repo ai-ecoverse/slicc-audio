@@ -156,25 +156,35 @@ try {
           Stop-Install "$Tgz has no host/$cmd.mjs"
         }
       }
-      $NodeDir = Split-Path -Parent $Node
-      $npm = Join-Path $NodeDir $(if ($OnWindows) { 'npm.cmd' } else { 'npm' })
-      if (-not (Test-Path -LiteralPath $npm)) {
-        $found = Get-Command npm -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
-        if (-not $found) { Stop-Install "no npm next to $Node" }
-        $npm = $found.Source
+      $manifest = Get-Content -Raw -LiteralPath (Join-Path $Extract 'package.json') | ConvertFrom-Json
+      $deps = @()
+      foreach ($key in @('dependencies', 'optionalDependencies')) {
+        if ($manifest.$key) { $deps += @($manifest.$key.PSObject.Properties) }
       }
-      $env:Path = "$NodeDir$([System.IO.Path]::PathSeparator)$env:Path"
-      Push-Location -LiteralPath $Extract
-      try {
-        $npmLog = & $npm install --omit=dev --ignore-scripts --no-audit --no-fund 2>&1
-        $npmCode = $LASTEXITCODE
-      } finally {
-        Pop-Location
-      }
-      if ($npmCode -ne 0) {
-        [Console]::Error.WriteLine(($npmLog | Out-String))
-        Remove-Item -Recurse -Force -LiteralPath $Extract -ErrorAction SilentlyContinue
-        Stop-Install "npm install failed in $Tgz"
+      if ($deps.Count -gt 0) {
+        $NodeDir = Split-Path -Parent $Node
+        $npm = Join-Path $NodeDir $(if ($OnWindows) { 'npm.cmd' } else { 'npm' })
+        if (-not (Test-Path -LiteralPath $npm)) {
+          $found = Get-Command npm -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $found) {
+            Remove-Item -Recurse -Force -LiteralPath $Extract -ErrorAction SilentlyContinue
+            Stop-Install "no npm next to $Node"
+          }
+          $npm = $found.Source
+        }
+        $env:Path = "$NodeDir$([System.IO.Path]::PathSeparator)$env:Path"
+        Push-Location -LiteralPath $Extract
+        try {
+          $npmLog = & $npm install --omit=dev --ignore-scripts --no-audit --no-fund 2>&1
+          $npmCode = $LASTEXITCODE
+        } finally {
+          Pop-Location
+        }
+        if ($npmCode -ne 0) {
+          [Console]::Error.WriteLine(($npmLog | Out-String))
+          Remove-Item -Recurse -Force -LiteralPath $Extract -ErrorAction SilentlyContinue
+          Stop-Install "npm install failed in $Tgz"
+        }
       }
       if (Test-Path -LiteralPath $BundleDir) { Remove-Item -Recurse -Force -LiteralPath $BundleDir }
       Move-Item -LiteralPath $Extract -Destination $BundleDir

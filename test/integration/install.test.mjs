@@ -35,7 +35,7 @@ function tar(dir, args) {
   assert.equal(r.status, 0, r.stderr);
 }
 
-function release(version, { old = false } = {}) {
+function release(version, { old = false, bare = false } = {}) {
   const dir = temp('pkg');
   const pack = join(dir, 'package');
   mkdirSync(pack);
@@ -50,7 +50,7 @@ function release(version, { old = false } = {}) {
     );
   }
   const json = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
-  delete json.optionalDependencies;
+  if (bare) delete json.optionalDependencies;
   delete json.devDependencies;
   delete json.scripts;
   writeFileSync(join(pack, 'package.json'), JSON.stringify({ ...json, version }));
@@ -143,6 +143,7 @@ const latest = publish('/latest', [v110]);
 const both = publish('/both', [v110, v100]);
 const bad = publish('/bad', [release('1.2.0')], { corrupt: true });
 const legacy = publish('/legacy', [release('0.9.0', { old: true })]);
+const plain = publish('/plain', [release('1.3.0', { bare: true })]);
 const dist = nodeDist('/node');
 const badDist = nodeDist('/badnode', { corrupt: true });
 
@@ -323,6 +324,20 @@ describe('install.sh', () => {
       /registry down\ninstall\.sh: npm install failed in slicc-audio-1\.1\.0\.tgz\n$/
     );
     assert.deepEqual(readdirSync(t.data), ['node']);
+  });
+
+  it('runs npm only when the package has dependencies', async () => {
+    const t = setup();
+    const r = await sh([], {
+      ...t.env,
+      FAKE_NPM_FAIL: 'npm should not run',
+      SLICC_INSTALL_BASE_URL: plain,
+      SLICC_NODE_DIST_BASE: dist,
+    });
+    assert.equal(r.code, 0, r.stderr);
+    assert.ok(!existsSync(t.log));
+    assert.ok(!existsSync(join(t.data, '1.3.0', 'node_modules')));
+    assert.equal(r.stdout.split('\n')[0], `scsay 1.3.0 installed to ${join(t.bin, 'scsay')}`);
   });
 
   it('prints its usage, and exits 2 with it for a bad option', async () => {

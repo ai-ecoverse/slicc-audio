@@ -84,6 +84,13 @@ describe('the repository', () => {
     assert.ok(read('.gitignore').split('\n').includes('release/'));
     assert.ok(read('install.sh').startsWith('#!/bin/sh\n'));
     assert.match(read('install.ps1'), /^param\(/);
+    for (const name of ['install.sh', 'install.ps1']) {
+      const text = read(name);
+      assert.match(text, /dependencies/, name);
+      assert.match(text, /optionalDependencies/, name);
+      assert.match(text, /install --omit=dev --ignore-scripts --no-audit --no-fund/, name);
+      assert.match(text, /npm install failed in/, name);
+    }
     assert.match(pkg.scripts.lint, /shellcheck -s sh install\.sh && dash -n install\.sh/);
   });
 
