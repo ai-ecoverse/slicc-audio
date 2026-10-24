@@ -138,6 +138,8 @@ ensure_node() {
   fi
   printf 'install.sh: no Node %s or later on PATH, downloading it\n' "$MIN_NODE" >&2
   _tmp="$(mktemp -d)"
+  _extract=""
+  trap 'rm -rf "$_tmp" ${_extract:+"$_extract"}' EXIT
   fetch "$NODE_DIST_BASE/index.json" "$_tmp/index.json"
   _index="$(cat "$_tmp/index.json")"
   _version="$(pick_node "$_index" 1)"
@@ -151,7 +153,7 @@ ensure_node() {
   _extract="$DATA_DIR/.node-$$"
   rm -rf "$_extract"
   mkdir -p "$_extract"
-  tar xzf "$_tmp/$_archive" -C "$_extract" --strip-components=1
+  tar xzf "$_tmp/$_archive" -C "$_extract" --strip-components=1 || die "could not unpack $_archive"
   rm -rf "$_tmp" "$DATA_DIR/node"
   mv "$_extract" "$DATA_DIR/node"
   printf 'install.sh: Node %s installed to %s\n' "$_version" "$DATA_DIR/node" >&2
@@ -175,7 +177,8 @@ fi
 BASE_URL="${BASE_URL%/}"
 
 TMP_INSTALL="$(mktemp -d)"
-trap 'rm -rf "$TMP_INSTALL"' EXIT
+EXTRACT=""
+trap 'rm -rf "$TMP_INSTALL" ${EXTRACT:+"$EXTRACT"}' EXIT
 
 fetch "$BASE_URL/SHA256SUMS" "$TMP_INSTALL/SHA256SUMS"
 if [ -n "$VERSION" ]; then
@@ -194,7 +197,7 @@ mkdir -p "$DATA_DIR"
 EXTRACT="$DATA_DIR/.bundle-$$"
 rm -rf "$EXTRACT"
 mkdir -p "$EXTRACT"
-tar xzf "$TMP_INSTALL/$TGZ" -C "$EXTRACT" --strip-components=1
+tar xzf "$TMP_INSTALL/$TGZ" -C "$EXTRACT" --strip-components=1 || die "could not unpack $TGZ"
 for cmd in $COMMANDS; do
   [ -f "$EXTRACT/host/$cmd.mjs" ] || die "$TGZ has no host/$cmd.mjs"
 done

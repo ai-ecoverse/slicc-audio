@@ -7,6 +7,7 @@ param(
 try {
   & {
     $ErrorActionPreference = 'Stop'
+    $PSNativeCommandUseErrorActionPreference = $false
     $ProgressPreference = 'SilentlyContinue'
 
     $Commands = @('scsay', 'schear', 'scplay', 'scchime')
@@ -56,7 +57,7 @@ try {
 
     function Test-Node([string]$Path) {
       try {
-        $reported = & $Path --version 2>$null
+        $reported = & { $ErrorActionPreference = 'Continue'; & $Path --version 2>$null }
       } catch {
         return $false
       }
@@ -89,7 +90,11 @@ try {
         Get-File "$NodeDist/$nodeVersion/SHASUMS256.txt" (Join-Path $tmp 'SHASUMS256.txt')
         Get-File "$NodeDist/$nodeVersion/$archive" (Join-Path $tmp $archive)
         Test-Sum (Join-Path $tmp $archive) (Get-Sum (Join-Path $tmp 'SHASUMS256.txt') $archive)
-        Expand-Archive -LiteralPath (Join-Path $tmp $archive) -DestinationPath $tmp
+        try {
+          Expand-Archive -LiteralPath (Join-Path $tmp $archive) -DestinationPath $tmp
+        } catch {
+          Stop-Install "could not unpack $archive"
+        }
         New-Item -ItemType Directory -Force -Path $DataDir | Out-Null
         $nodeDir = Join-Path $DataDir 'node'
         if (Test-Path -LiteralPath $nodeDir) { Remove-Item -Recurse -Force -LiteralPath $nodeDir }
@@ -125,6 +130,7 @@ try {
 
     $Tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("slicc-audio-install-" + [System.Guid]::NewGuid())
     New-Item -ItemType Directory -Path $Tmp | Out-Null
+    $Extract = $null
     try {
       $Sums = Join-Path $Tmp 'SHA256SUMS'
       Get-File "$Base/SHA256SUMS" $Sums
@@ -149,7 +155,8 @@ try {
       $Extract = Join-Path $DataDir (".bundle-" + [System.Guid]::NewGuid())
       New-Item -ItemType Directory -Force -Path $Extract | Out-Null
       $tar = if ($OnWindows) { Join-Path $env:SystemRoot 'System32\tar.exe' } else { 'tar' }
-      & $tar -xzf $Tarball -C $Extract --strip-components=1
+      & { $ErrorActionPreference = 'Continue'; & $tar -xzf $Tarball -C $Extract --strip-components=1 }
+      if ($LASTEXITCODE -ne 0) { Stop-Install "could not unpack $Tgz" }
       if ($LASTEXITCODE -ne 0) { Stop-Install "could not unpack $Tgz" }
       foreach ($cmd in $Commands) {
         if (-not (Test-Path -LiteralPath (Join-Path (Join-Path $Extract 'host') "$cmd.mjs"))) {
@@ -175,7 +182,7 @@ try {
         $env:Path = "$NodeDir$([System.IO.Path]::PathSeparator)$env:Path"
         Push-Location -LiteralPath $Extract
         try {
-          $npmLog = & $npm install --omit=dev --ignore-scripts --no-audit --no-fund 2>&1
+          $npmLog = & { $ErrorActionPreference = 'Continue'; & $npm install --omit=dev --ignore-scripts --no-audit --no-fund 2>&1 }
           $npmCode = $LASTEXITCODE
         } finally {
           Pop-Location
@@ -190,6 +197,7 @@ try {
       Move-Item -LiteralPath $Extract -Destination $BundleDir
     } finally {
       Remove-Item -Recurse -Force -LiteralPath $Tmp -ErrorAction SilentlyContinue
+      if ($Extract -and (Test-Path -LiteralPath $Extract)) { Remove-Item -Recurse -Force -LiteralPath $Extract -ErrorAction SilentlyContinue }
     }
 
     New-Item -ItemType Directory -Force -Path $Dir | Out-Null
@@ -213,6 +221,8 @@ try {
         '    if ($PSVersionTable.PSEdition -ne ''Core'' -and $~c~Text -match ''\s'') { $~c~Text -replace ''(\\+)$'', ''$1$1'' } else { $~c~Text }',
         '  }',
         '} })',
+        '$PSNativeCommandUseErrorActionPreference = $false',
+        '$ErrorActionPreference = ''Continue''',
         '$~c~Status = 1',
         'try {',
         '  & ~NODE~ ~ENTRY~ @~c~Args',
