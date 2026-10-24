@@ -469,7 +469,10 @@ describe('on real Windows', { skip: !onWindows && 'not Windows' }, () => {
       t.diagnostic(`${shell} exited ${played.status}: ${played.stderr.trim()}`);
       assert.equal(played.status, 1, played.stderr);
       assert.doesNotMatch(played.stderr, /cannot decode audio/);
-      assert.match(played.stderr, /^scplay: .*0xC00D[0-9A-F]{4}/);
+      assert.match(
+        played.stderr,
+        /^(?!scplay: ).+\r?\nscplay: (powershell|pwsh)\.exe failed \(exit 1\)\n$/
+      );
       assert.ok(Date.now() - started < 9000, String(Date.now() - started));
     });
   }
