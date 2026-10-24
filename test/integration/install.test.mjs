@@ -225,7 +225,7 @@ describe('install.sh', () => {
       const variable = `${cmd.toUpperCase()}_INSTALL_DIR`;
       assert.equal(
         readFileSync(join(t.bin, cmd), 'utf8'),
-        `#!/bin/sh\n${variable}='${t.bin}'\nexport ${variable}\n: "\${NODE_USE_ENV_PROXY=1}"\nexport NODE_USE_ENV_PROXY\nexec '${node}' '${join(t.data, '1.1.0', 'host', `${cmd}.mjs`)}' "$@"\n`
+        `#!/bin/sh\n${variable}='${t.bin}'\nexport ${variable}\nexec '${node}' '${join(t.data, '1.1.0', 'host', `${cmd}.mjs`)}' "$@"\n`
       );
       const v = await spawned(join(t.bin, cmd), ['--version'], t.env);
       assert.equal(v.stdout, '1.1.0\n');
@@ -270,7 +270,7 @@ describe('install.sh', () => {
     assert.deepEqual(readdirSync(t.data).sort(), ['1.0.0', '1.1.0']);
   });
 
-  it('writes launchers that set NODE_USE_ENV_PROXY=1 only when it is unset', async () => {
+  it('writes launchers that leave NODE_USE_ENV_PROXY as the caller set it', async () => {
     const t = setup();
     const r = await sh([], {
       ...t.env,
@@ -286,7 +286,7 @@ describe('install.sh', () => {
         `printf "%s|%s" "$NODE_USE_ENV_PROXY" "$${cmd.toUpperCase()}_INSTALL_DIR"`,
       ].join('\n');
       for (const [extra, expected] of [
-        [{}, `1|${t.bin}`],
+        [{}, `|${t.bin}`],
         [{ NODE_USE_ENV_PROXY: '0' }, `0|${t.bin}`],
       ]) {
         const shown = spawnSync(join(sys, 'sh'), ['-c', probe], {
@@ -482,8 +482,6 @@ describe('install.ps1', () => {
     for (const line of [
       "        '$~c~Previous = $env:~V~',",
       "        '$env:~V~ = ~DIR~',",
-      "        '$~c~Proxy = $env:NODE_USE_ENV_PROXY',",
-      "        'if ($null -eq $~c~Proxy) { $env:NODE_USE_ENV_PROXY = ''1'' }',",
       "        '$~c~Mode = Get-Variable -Name PSNativeCommandArgumentPassing -ValueOnly -ErrorAction SilentlyContinue',",
       "        '$~c~Legacy = $PSVersionTable.PSVersion.Major -lt 7 -or \"$~c~Mode\" -eq ''Legacy'' -or ($null -eq $~c~Mode -and $PSVersionTable.PSVersion.Major -eq 7 -and $PSVersionTable.PSVersion.Minor -lt 3)',",
       "        '$~c~Args = @(foreach ($~c~Arg in $args) { foreach ($~c~Item in @($~c~Arg)) {',",
@@ -498,7 +496,6 @@ describe('install.ps1', () => {
       "        '  Write-Error -ErrorRecord $_',",
       "        '} finally {',",
       "        '  if ($null -eq $~c~Previous) { Remove-Item -LiteralPath Env:~V~ -ErrorAction SilentlyContinue } else { $env:~V~ = $~c~Previous }',",
-      "        '  if ($null -eq $~c~Proxy) { Remove-Item -LiteralPath Env:NODE_USE_ENV_PROXY -ErrorAction SilentlyContinue }',",
       "        '}',",
       "        'exit $~c~Status',",
       '      ) -join "`r`n"), \'~(\\w+)~\', { param($m) $values[$m.Groups[1].Value] })',
@@ -510,9 +507,7 @@ describe('install.ps1', () => {
         '        "`"$(& $escape $Node)`" `"$(& $escape $Entry)`" %* & call :done %%ERRORLEVEL%% & call exit /b %%ERRORLEVEL%%",\n'
       )
     );
-    assert.ok(
-      text.includes(`        'if not defined NODE_USE_ENV_PROXY set "NODE_USE_ENV_PROXY=1"',\n`)
-    );
+    assert.doesNotMatch(text, /NODE_USE_ENV_PROXY/);
     assert.doesNotMatch(text, /^\s+'\(',$/m);
     assert.doesNotMatch(text, /@args"/);
     assert.doesNotMatch(text, /Invoke-Expression|\biex\b|cmd(\.exe)? \/c|Start-Process/i);
@@ -633,7 +628,7 @@ describe('install.ps1', () => {
       ],
       env()
     );
-    assert.equal(seen.stdout.trim(), `1|${bin}`);
+    assert.equal(seen.stdout.trim(), `undefined|${bin}`);
     const argv = join(local, 'argv.mjs');
     writeFileSync(
       argv,

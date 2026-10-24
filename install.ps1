@@ -209,8 +209,6 @@ try {
       $ps1 = [regex]::Replace((@(
         '$~c~Previous = $env:~V~',
         '$env:~V~ = ~DIR~',
-        '$~c~Proxy = $env:NODE_USE_ENV_PROXY',
-        'if ($null -eq $~c~Proxy) { $env:NODE_USE_ENV_PROXY = ''1'' }',
         '$~c~Mode = Get-Variable -Name PSNativeCommandArgumentPassing -ValueOnly -ErrorAction SilentlyContinue',
         '$~c~Legacy = $PSVersionTable.PSVersion.Major -lt 7 -or "$~c~Mode" -eq ''Legacy'' -or ($null -eq $~c~Mode -and $PSVersionTable.PSVersion.Major -eq 7 -and $PSVersionTable.PSVersion.Minor -lt 3)',
         '$~c~Args = @(foreach ($~c~Arg in $args) { foreach ($~c~Item in @($~c~Arg)) {',
@@ -233,7 +231,6 @@ try {
         '  Write-Error -ErrorRecord $_',
         '} finally {',
         '  if ($null -eq $~c~Previous) { Remove-Item -LiteralPath Env:~V~ -ErrorAction SilentlyContinue } else { $env:~V~ = $~c~Previous }',
-        '  if ($null -eq $~c~Proxy) { Remove-Item -LiteralPath Env:NODE_USE_ENV_PROXY -ErrorAction SilentlyContinue }',
         '}',
         'exit $~c~Status',
         ''
@@ -245,7 +242,6 @@ try {
         'for /f "tokens=2 delims=:." %%c in (''chcp'') do set "SLICC_AUDIO_CP=%%c"',
         'chcp 65001 >nul',
         "set `"$Var=$(& $escape $Dir)`"",
-        'if not defined NODE_USE_ENV_PROXY set "NODE_USE_ENV_PROXY=1"',
         "`"$(& $escape $Node)`" `"$(& $escape $Entry)`" %* & call :done %%ERRORLEVEL%% & call exit /b %%ERRORLEVEL%%",
         ':done',
         'chcp %SLICC_AUDIO_CP% >nul',
