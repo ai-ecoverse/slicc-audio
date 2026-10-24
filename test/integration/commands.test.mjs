@@ -679,7 +679,7 @@ describe('hear', () => {
       return answer(call);
     };
     try {
-      assert.equal((await sh('hear -x stop -T 1')).status, 0);
+      assert.equal((await sh('hear -x stop -T 5')).status, 0);
     } finally {
       page.answer = answer;
     }
@@ -687,9 +687,13 @@ describe('hear', () => {
       .filter(([kind]) => kind === 'audio.record')
       .map(([, options]) => options.seconds);
     assert.ok(seconds.length >= 2, String(seconds));
-    assert.equal(seconds[0], 1);
+    assert.equal(seconds[0], 5);
     for (let i = 1; i < seconds.length; i++)
       assert.ok(seconds[i] < seconds[i - 1], String(seconds));
+    assert.ok(
+      seconds.slice(1).some((n) => !Number.isInteger(n)),
+      `a budget counted in whole seconds: ${seconds}`
+    );
   });
 
   it('falls back to Web Speech on the microphone, unless --device', async () => {
