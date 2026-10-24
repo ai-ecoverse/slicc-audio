@@ -550,6 +550,39 @@ describe('on real Windows', { skip: !onWindows && 'not Windows' }, () => {
   });
 
   for (const shell of ['powershell.exe', 'pwsh']) {
+    it(`passes MediaFailed through for a corrupt WAV in the real ${shell}`, async (t) => {
+      const exe =
+        shell === 'pwsh'
+          ? pwsh &&
+            spawnSync(pwsh, ['-NoProfile', '-Command', '(Get-Command pwsh).Source'], {
+              encoding: 'utf8',
+            }).stdout.trim()
+          : powershell;
+      if (!exe) {
+        t.skip('pwsh is not installed');
+        return;
+      }
+      const file = join(mkdtempSync(join(scratch, 'corrupt-')), 'bad.wav');
+      writeFileSync(
+        file,
+        Buffer.concat([Buffer.from('RIFF\xff\xff\xff\xffWAVEjunk'), Buffer.alloc(512, 0xa5)])
+      );
+      const started = Date.now();
+      const played = await run(process.execPath, [join(root, 'host', 'scplay.mjs'), file], {
+        env: withPath(clean(), `${system};${dirname(exe)}`),
+      });
+      t.diagnostic(`${shell} exited ${played.status}: ${played.stderr.trim()}`);
+      assert.equal(played.status, 1, played.stderr);
+      assert.doesNotMatch(played.stderr, /cannot decode audio/);
+      assert.match(
+        played.stderr,
+        /^(?!scplay: ).+\r?\nscplay: (powershell|pwsh)\.exe failed \(exit 1\)\n$/
+      );
+      assert.ok(Date.now() - started < 9000, String(Date.now() - started));
+    });
+  }
+
+  for (const shell of ['powershell.exe', 'pwsh']) {
     it(`lists the voices, and plays a WAV when there is an audio device, through the real ${shell}`, async (t) => {
       const exe =
         shell === 'pwsh'
