@@ -672,28 +672,34 @@ describe('hear', () => {
   });
 
   it('measures the -x deadline in milliseconds', async () => {
-    world.transcripts = ['go on\n'];
     const answer = page.answer;
     page.answer = async (call) => {
-      if (call.kind === 'audio.record') await new Promise((resolve) => setTimeout(resolve, 200));
+      if (call.kind === 'audio.record') await new Promise((resolve) => setTimeout(resolve, 150));
       return answer(call);
     };
     try {
-      assert.equal((await sh('hear -x stop -T 5')).status, 0);
+      world.transcripts = ['one\n', 'two\n', 'three stop\n'];
+      assert.equal((await sh('hear -x stop -T 600')).stdout, 'one\ntwo\nthree stop\n');
+      const seconds = requests()
+        .filter(([kind]) => kind === 'audio.record')
+        .map(([, options]) => options.seconds);
+      assert.equal(seconds.length, 3, String(seconds));
+      assert.equal(seconds[0], 600);
+      assert.ok(seconds[1] < 600 && seconds[2] < seconds[1], String(seconds));
+      assert.ok(
+        seconds.slice(1).some((n) => !Number.isInteger(n)),
+        `a budget counted in whole seconds: ${seconds}`
+      );
+      page.answer = async (call) => {
+        if (call.kind === 'audio.record') await new Promise((resolve) => setTimeout(resolve, 1200));
+        return answer(call);
+      };
+      world.transcripts = ['go on\n'];
+      assert.equal((await sh('hear -x stop -T 1.1')).stdout, 'go on\n');
+      assert.equal(requests().filter(([kind]) => kind === 'audio.record').length, 1);
     } finally {
       page.answer = answer;
     }
-    const seconds = requests()
-      .filter(([kind]) => kind === 'audio.record')
-      .map(([, options]) => options.seconds);
-    assert.ok(seconds.length >= 2, String(seconds));
-    assert.equal(seconds[0], 5);
-    for (let i = 1; i < seconds.length; i++)
-      assert.ok(seconds[i] < seconds[i - 1], String(seconds));
-    assert.ok(
-      seconds.slice(1).some((n) => !Number.isInteger(n)),
-      `a budget counted in whole seconds: ${seconds}`
-    );
   });
 
   it('falls back to Web Speech on the microphone, unless --device', async () => {
