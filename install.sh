@@ -227,6 +227,8 @@ for cmd in $COMMANDS; do
     printf '#!/bin/sh\n'
     printf '%s=%s\n' "$VAR" "$(quoted "$INSTALL_DIR")"
     printf 'export %s\n' "$VAR"
+    printf ": \"\${NODE_USE_ENV_PROXY=1}\"\\n"
+    printf 'export NODE_USE_ENV_PROXY\n'
     printf 'exec %s %s "$@"\n' "$(quoted "$NODE_ABS")" "$(quoted "$BUNDLE_DIR/host/$cmd.mjs")"
   } > "$LAUNCHER_TMP"
   chmod 755 "$LAUNCHER_TMP"
