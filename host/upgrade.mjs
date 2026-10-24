@@ -8,7 +8,10 @@ export const variable = (name) => `${name.toUpperCase()}_INSTALL_DIR`;
 async function download(url) {
   try {
     const res = await fetch(url, { redirect: 'follow', signal: AbortSignal.timeout(60000) });
-    if (!res.ok) return { error: `HTTP ${res.status}` };
+    if (!res.ok) {
+      await res.body?.cancel().catch(() => {});
+      return { error: `HTTP ${res.status}` };
+    }
     return { body: Buffer.from(await res.arrayBuffer()) };
   } catch (error) {
     return { error: error.cause?.message ?? error.message };

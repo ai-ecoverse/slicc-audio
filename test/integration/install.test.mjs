@@ -43,7 +43,7 @@ function tar(dir, args) {
   assert.equal(r.status, 0, r.stderr);
 }
 
-function release(version, { old = false, bare = false } = {}) {
+function release(version, { old = false, bare = false, nobin = false } = {}) {
   const dir = temp('pkg');
   const pack = join(dir, 'package');
   mkdirSync(pack);
@@ -59,6 +59,7 @@ function release(version, { old = false, bare = false } = {}) {
   }
   const json = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
   if (bare) delete json.optionalDependencies;
+  if (nobin) delete json.bin;
   delete json.devDependencies;
   delete json.scripts;
   writeFileSync(join(pack, 'package.json'), JSON.stringify({ ...json, version }));
@@ -67,19 +68,20 @@ function release(version, { old = false, bare = false } = {}) {
   const assets = spawnSync(process.execPath, [join(root, 'scripts', 'assets.mjs'), out, version], {
     encoding: 'utf8',
   });
+  if (nobin) return { ...assets, dir: out };
   assert.equal(assets.status, 0, assets.stderr);
   return out;
 }
 
-function publish(prefix, dirs, { corrupt = false } = {}) {
+function publish(prefix, dirs, { corrupt = false, truncate = false } = {}) {
   const sums = [];
   for (const dir of dirs) {
     for (const name of readdirSync(dir)) {
-      if (name.endsWith('.tgz')) files.set(`${prefix}/${name}`, readFileSync(join(dir, name)));
-    }
-    for (const line of readFileSync(join(dir, 'SHA256SUMS'), 'utf8').trim().split('\n')) {
-      if (line.endsWith('.tgz'))
-        sums.push(corrupt ? `${sha('other')}  ${line.split('  ')[1]}` : line);
+      if (!name.endsWith('.tgz')) continue;
+      const whole = readFileSync(join(dir, name));
+      const data = truncate ? whole.subarray(0, whole.length >> 1) : whole;
+      files.set(`${prefix}/${name}`, data);
+      sums.push(`${corrupt ? sha('other') : sha(data)}  ${name}`);
     }
   }
   for (const name of ['install.sh', 'install.ps1'])
@@ -88,7 +90,7 @@ function publish(prefix, dirs, { corrupt = false } = {}) {
   return `${base}${prefix}`;
 }
 
-function nodeDist(prefix, { corrupt = false } = {}) {
+function nodeDist(prefix, { corrupt = false, truncate = false } = {}) {
   const dir = temp('dist');
   const name = `node-${NODE}-${os}-${arch}`;
   mkdirSync(join(dir, name, 'bin'), { recursive: true });
@@ -101,7 +103,8 @@ function nodeDist(prefix, { corrupt = false } = {}) {
     { mode: 0o755 }
   );
   tar(dir, ['czf', `${name}.tar.gz`, name]);
-  const archive = readFileSync(join(dir, `${name}.tar.gz`));
+  const whole = readFileSync(join(dir, `${name}.tar.gz`));
+  const archive = truncate ? whole.subarray(0, whole.length >> 1) : whole;
   files.set(
     `${prefix}/index.json`,
     JSON.stringify([
@@ -154,6 +157,8 @@ const legacy = publish('/legacy', [release('0.9.0', { old: true })]);
 const plain = publish('/plain', [release('1.3.0', { bare: true })]);
 const dist = nodeDist('/node');
 const badDist = nodeDist('/badnode', { corrupt: true });
+const cutDist = nodeDist('/cutnode', { truncate: true });
+const cut = publish('/cut', [release('1.4.0')], { truncate: true });
 
 describe('scripts/assets.mjs', () => {
   it('names the tarball slicc-audio-<version>.tgz, and SHA256SUMS covers it and both installers', () => {
@@ -164,6 +169,16 @@ describe('scripts/assets.mjs', () => {
       `${sha(tgz)}  slicc-audio-1.1.0.tgz\n${sha(readFileSync(join(root, 'install.sh')))}  install.sh\n${sha(readFileSync(join(root, 'install.ps1')))}  install.ps1\n`
     );
     assert.ok(!existsSync(join(v110, 'ai-ecoverse-slicc-audio-1.1.0.tgz')));
+    const rerun = spawnSync(process.execPath, [join(root, 'scripts', 'assets.mjs'), v110, '1.1.0']);
+    assert.equal(rerun.status, 0, String(rerun.stderr));
+    assert.equal(readFileSync(join(v110, 'SHA256SUMS'), 'utf8'), sums);
+    const noBin = release('0.6.1', { nobin: true });
+    assert.equal(noBin.status, 1);
+    assert.equal(
+      noBin.stderr,
+      'scripts/assets.mjs: slicc-audio-0.6.1.tgz lacks a package.json with bin\n'
+    );
+    assert.deepEqual(readdirSync(noBin.dir), ['ai-ecoverse-slicc-audio-0.6.1.tgz']);
     assert.equal(
       spawnSync(process.execPath, [join(root, 'scripts', 'assets.mjs'), v110, 'nope']).status,
       2
@@ -346,6 +361,27 @@ describe('install.sh', () => {
     assert.ok(!existsSync(t.log));
     assert.ok(!existsSync(join(t.data, '1.3.0', 'node_modules')));
     assert.equal(r.stdout.split('\n')[0], `scsay 1.3.0 installed to ${join(t.bin, 'scsay')}`);
+  });
+
+  it('fails with exit 1 and leaves nothing behind when the tarball or Node does not unpack', async () => {
+    for (const [extra, what] of [
+      [{ SLICC_INSTALL_BASE_URL: cut, SLICC_NODE_DIST_BASE: dist }, 'slicc-audio-1\\.4\\.0\\.tgz'],
+      [
+        { SLICC_INSTALL_BASE_URL: latest, SLICC_NODE_DIST_BASE: cutDist },
+        `node-${NODE}-${os}-${arch}\\.tar\\.gz`,
+      ],
+    ]) {
+      const t = setup();
+      const r = await sh([], { ...t.env, ...extra });
+      assert.equal(r.code, 1);
+      assert.match(r.stderr, new RegExp(`install\\.sh: could not unpack ${what}\n$`));
+      assert.deepEqual(
+        existsSync(t.data) ? readdirSync(t.data) : [],
+        what.startsWith('node') ? [] : ['node']
+      );
+      assert.deepEqual(readdirSync(t.env.TMPDIR), []);
+      assert.ok(!existsSync(join(t.bin, 'scsay')));
+    }
   });
 
   it('prints its usage, and exits 2 with it for a bad option', async () => {
@@ -560,5 +596,52 @@ describe('install.ps1', () => {
       assert.deepEqual(all, [bin, ...tricky], `${mode}: ${passed.stderr}`);
       assert.deepEqual(list, [bin, 'a', 'b c', 'd'], mode);
     }
+    const strict =
+      "$PSNativeCommandUseErrorActionPreference = $true; $ErrorActionPreference = 'Stop'";
+    const strictLocal = temp('local');
+    const strictBin = join(strictLocal, 'bin');
+    const strictInstall = await spawned(
+      pwsh,
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `${strict}; & $env:T_PS1 -Dir $env:T_DIR; exit $LASTEXITCODE`,
+      ],
+      env({
+        LOCALAPPDATA: strictLocal,
+        SLICC_INSTALL_BASE_URL: plain,
+        T_PS1: installPs1,
+        T_DIR: strictBin,
+      })
+    );
+    assert.equal(strictInstall.code, 0, strictInstall.stderr);
+    assert.equal(
+      strictInstall.stdout.split(/\r?\n/)[0],
+      `scsay 1.3.0 installed to ${join(strictBin, 'scsay.ps1')}`
+    );
+    const strictRun = await spawned(
+      pwsh,
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `${strict}; & $env:T_LAUNCHER --nope 2>$null; 'code=' + $LASTEXITCODE; 'eap=' + $ErrorActionPreference; 'native=' + $PSNativeCommandUseErrorActionPreference`,
+      ],
+      env({ T_LAUNCHER: join(strictBin, 'scsay.ps1') })
+    );
+    assert.deepEqual(
+      strictRun.stdout.trim().split(/\r?\n/),
+      ['code=2', 'eap=Stop', 'native=True'],
+      strictRun.stderr
+    );
+    const corrupt = await spawned(
+      pwsh,
+      ['-NoProfile', '-NonInteractive', '-File', installPs1, '-Dir', strictBin],
+      env({ LOCALAPPDATA: strictLocal, SLICC_INSTALL_BASE_URL: cut })
+    );
+    assert.equal(corrupt.code, 1);
+    assert.match(corrupt.stderr, /install\.ps1: could not unpack slicc-audio-1\.4\.0\.tgz/);
+    assert.deepEqual(readdirSync(join(strictLocal, 'slicc-audio')).sort(), ['1.3.0']);
   });
 });
