@@ -270,6 +270,34 @@ describe('install.sh', () => {
     assert.deepEqual(readdirSync(t.data).sort(), ['1.0.0', '1.1.0']);
   });
 
+  it('writes launchers that leave NODE_USE_ENV_PROXY as the caller set it', async () => {
+    const t = setup();
+    const r = await sh([], {
+      ...t.env,
+      SLICC_INSTALL_BASE_URL: latest,
+      SLICC_NODE_DIST_BASE: dist,
+    });
+    assert.equal(r.code, 0, r.stderr);
+    for (const cmd of COMMANDS) {
+      const lines = readFileSync(join(t.bin, cmd), 'utf8').trimEnd().split('\n');
+      assert.match(lines.at(-1), /^exec /);
+      const probe = [
+        ...lines.slice(0, -1),
+        `printf "%s|%s" "$NODE_USE_ENV_PROXY" "$${cmd.toUpperCase()}_INSTALL_DIR"`,
+      ].join('\n');
+      for (const [extra, expected] of [
+        [{}, `|${t.bin}`],
+        [{ NODE_USE_ENV_PROXY: '0' }, `0|${t.bin}`],
+      ]) {
+        const shown = spawnSync(join(sys, 'sh'), ['-c', probe], {
+          env: { ...t.env, ...extra },
+          encoding: 'utf8',
+        });
+        assert.equal(shown.stdout, expected, cmd);
+      }
+    }
+  });
+
   it("accepts an older release's <cmd> <version>, and reuses the Node it installed before", async () => {
     const t = setup();
     let r = await sh([], { ...t.env, SLICC_INSTALL_BASE_URL: legacy, SLICC_NODE_DIST_BASE: dist });
@@ -460,11 +488,15 @@ describe('install.ps1', () => {
       "        '  elseif ($~c~Text -eq '''') { ''\"\"'' }',",
       "        '    $~c~Text = $~c~Text -replace ''(\\\\*)\"'', ''$1$1\\\"''',",
       "        '$~c~Status = 1',",
+      "        '$global:LASTEXITCODE = $null',",
       "        'try {',",
       "        '  & ~NODE~ ~ENTRY~ @~c~Args',",
-      "        '  $~c~Status = $LASTEXITCODE',",
+      "        '  if ($null -ne $LASTEXITCODE) { $~c~Status = $LASTEXITCODE }',",
+      "        '} catch {',",
+      "        '  Write-Error -ErrorRecord $_',",
       "        '} finally {',",
       "        '  if ($null -eq $~c~Previous) { Remove-Item -LiteralPath Env:~V~ -ErrorAction SilentlyContinue } else { $env:~V~ = $~c~Previous }',",
+      "        '}',",
       "        'exit $~c~Status',",
       '      ) -join "`r`n"), \'~(\\w+)~\', { param($m) $values[$m.Groups[1].Value] })',
     ]) {
@@ -475,6 +507,7 @@ describe('install.ps1', () => {
         '        "`"$(& $escape $Node)`" `"$(& $escape $Entry)`" %* & call :done %%ERRORLEVEL%% & call exit /b %%ERRORLEVEL%%",\n'
       )
     );
+    assert.doesNotMatch(text, /NODE_USE_ENV_PROXY/);
     assert.doesNotMatch(text, /^\s+'\(',$/m);
     assert.doesNotMatch(text, /@args"/);
     assert.doesNotMatch(text, /Invoke-Expression|\biex\b|cmd(\.exe)? \/c|Start-Process/i);
@@ -549,11 +582,15 @@ describe('install.ps1', () => {
       assert.equal(v.stdout.trim(), '1.3.0', v.stderr);
     }
     const launcher = join(bin, 'scsay.ps1').replaceAll("'", "''");
-    const show =
-      "'dir=' + $(if ($null -eq $env:SCSAY_INSTALL_DIR) { 'unset' } else { $env:SCSAY_INSTALL_DIR })";
-    for (const [before, after] of [
-      ["$env:SCSAY_INSTALL_DIR = 'before'", 'before'],
-      ['Remove-Item Env:SCSAY_INSTALL_DIR -ErrorAction SilentlyContinue', 'unset'],
+    const show = (name) =>
+      `'${name}=' + $(if ($null -eq $env:${name}) { 'unset' } else { $env:${name} })`;
+    for (const [before, after, proxy] of [
+      ["$env:SCSAY_INSTALL_DIR = 'before'; $env:NODE_USE_ENV_PROXY = '0'", 'before', '0'],
+      [
+        'Remove-Item Env:SCSAY_INSTALL_DIR, Env:NODE_USE_ENV_PROXY -ErrorAction SilentlyContinue',
+        'unset',
+        'unset',
+      ],
     ]) {
       const session = await spawned(
         pwsh,
@@ -561,12 +598,37 @@ describe('install.ps1', () => {
           '-NoProfile',
           '-NonInteractive',
           '-Command',
-          `${before}; & '${launcher}' --nope 2>$null; 'code=' + $LASTEXITCODE; ${show}`,
+          `${before}; & '${launcher}' --nope 2>$null; 'code=' + $LASTEXITCODE; ${show('SCSAY_INSTALL_DIR')}; ${show('NODE_USE_ENV_PROXY')}`,
         ],
         env()
       );
-      assert.deepEqual(session.stdout.trim().split(/\r?\n/), ['code=2', `dir=${after}`]);
+      assert.deepEqual(session.stdout.trim().split(/\r?\n/), [
+        'code=2',
+        `SCSAY_INSTALL_DIR=${after}`,
+        `NODE_USE_ENV_PROXY=${proxy}`,
+      ]);
     }
+    const proxyProbe = join(local, 'proxy.mjs');
+    writeFileSync(
+      proxyProbe,
+      'process.stdout.write(`${process.env.NODE_USE_ENV_PROXY}|${process.env.SCSAY_INSTALL_DIR}`);\n'
+    );
+    const probing = join(local, 'proxy.ps1');
+    writeFileSync(
+      probing,
+      readFileSync(join(bin, 'scsay.ps1'), 'utf8').replace(`'${entry('scsay')}'`, `'${proxyProbe}'`)
+    );
+    const seen = await spawned(
+      pwsh,
+      [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `Remove-Item Env:NODE_USE_ENV_PROXY -ErrorAction SilentlyContinue; & '${probing}'`,
+      ],
+      env()
+    );
+    assert.equal(seen.stdout.trim(), `undefined|${bin}`);
     const argv = join(local, 'argv.mjs');
     writeFileSync(
       argv,
@@ -595,6 +657,42 @@ describe('install.ps1', () => {
       const [all, list] = passed.stdout.split(/(?<=\])(?=\[)/).map((part) => JSON.parse(part));
       assert.deepEqual(all, [bin, ...tricky], `${mode}: ${passed.stderr}`);
       assert.deepEqual(list, [bin, 'a', 'b c', 'd'], mode);
+    }
+    const garbage = join(local, 'garbage');
+    writeFileSync(garbage, 'not a program\n', { mode: 0o755 });
+    for (const dead of [join(local, 'gone'), garbage]) {
+      const broken = join(local, 'broken.ps1');
+      writeFileSync(
+        broken,
+        readFileSync(join(bin, 'scsay.ps1'), 'utf8').replace(
+          /^ {2}& '(?:[^']|'')+' /m,
+          `  & '${dead}' `
+        )
+      );
+      assert.ok(readFileSync(broken, 'utf8').includes(`& '${dead}' '${entry('scsay')}'`));
+      for (const caller of [
+        '',
+        "$PSNativeCommandUseErrorActionPreference = $true; $ErrorActionPreference = 'Stop'; ",
+        'trap { continue }; ',
+      ]) {
+        for (const redirect of ['', ' 2>$null']) {
+          const failed = await spawned(
+            pwsh,
+            [
+              '-NoProfile',
+              '-NonInteractive',
+              '-Command',
+              `${caller}& $env:T_NODE -e 0; & '${broken}' --version${redirect}; 'code=' + $LASTEXITCODE; ${show('SCSAY_INSTALL_DIR')}; ${show('NODE_USE_ENV_PROXY')}`,
+            ],
+            env({ T_NODE: process.execPath })
+          );
+          assert.deepEqual(
+            failed.stdout.trim().split(/\r?\n/),
+            ['code=1', 'SCSAY_INSTALL_DIR=unset', 'NODE_USE_ENV_PROXY=unset'],
+            `${dead} ${caller}${redirect}: ${failed.stderr}`
+          );
+        }
+      }
     }
     const strict =
       "$PSNativeCommandUseErrorActionPreference = $true; $ErrorActionPreference = 'Stop'";

@@ -40,7 +40,9 @@ function withPath(env, value) {
 function clean(extra = {}) {
   const out = {};
   for (const [key, value] of Object.entries(process.env)) {
-    if (![...VARS, 'NODE_OPTIONS', 'PSMODULEPATH'].includes(key.toUpperCase())) {
+    if (
+      ![...VARS, 'NODE_USE_ENV_PROXY', 'NODE_OPTIONS', 'PSMODULEPATH'].includes(key.toUpperCase())
+    ) {
       out[key] = value;
     }
   }
@@ -311,20 +313,27 @@ describe('on real Windows', { skip: !onWindows && 'not Windows' }, () => {
       const [before, , after] = lines(pages.stdout);
       assert.equal(before, after, pages.stdout);
 
-      const leak = await batch(`"${launcher}" --version & set SCSAY_INSTALL_DIR`, env);
+      const leak = await batch(
+        `"${launcher}" --version & set SCSAY_INSTALL_DIR & set NODE_USE_ENV_PROXY`,
+        env
+      );
       assert.equal(leak.stdout.trim(), version, leak.stdout);
-      const show =
-        "'dir=' + $(if ($null -eq $env:SCSAY_INSTALL_DIR) { 'unset' } else { $env:SCSAY_INSTALL_DIR })";
-      for (const [setup, dir] of [
-        ["$env:SCSAY_INSTALL_DIR = 'before'", 'before'],
-        ['', 'unset'],
+      const show = (name) =>
+        `'${name}=' + $(if ($null -eq $env:${name}) { 'unset' } else { $env:${name} })`;
+      for (const [setup, dir, proxy] of [
+        ["$env:SCSAY_INSTALL_DIR = 'before'; $env:NODE_USE_ENV_PROXY = '0'", 'before', '0'],
+        ['', 'unset', 'unset'],
       ]) {
         const session = await ps(
           exe,
-          `${setup}; & $env:T_LAUNCHER --version | Out-Null; 'code=' + $LASTEXITCODE; ${show}`,
+          `${setup}; & $env:T_LAUNCHER --version | Out-Null; 'code=' + $LASTEXITCODE; ${show('SCSAY_INSTALL_DIR')}; ${show('NODE_USE_ENV_PROXY')}`,
           { ...env, T_LAUNCHER: ps1 }
         );
-        assert.deepEqual(lines(session.stdout), ['code=0', `dir=${dir}`], session.stderr);
+        assert.deepEqual(
+          lines(session.stdout),
+          ['code=0', `SCSAY_INSTALL_DIR=${dir}`, `NODE_USE_ENV_PROXY=${proxy}`],
+          session.stderr
+        );
       }
 
       const argv = join(local, 'argv.mjs');
@@ -386,6 +395,84 @@ describe('on real Windows', { skip: !onWindows && 'not Windows' }, () => {
           clean()
         );
         assert.ok(listed.stdout.trim().split(';').includes(bin), listed.stdout);
+      }
+    });
+  }
+
+  for (const shell of ['powershell.exe', 'pwsh']) {
+    it(`exits non-zero from both launchers under ${shell} when their node.exe can't start`, async (t) => {
+      const exe =
+        shell === 'pwsh'
+          ? pwsh &&
+            spawnSync(pwsh, ['-NoProfile', '-Command', '(Get-Process -Id $PID).Path'], {
+              encoding: 'utf8',
+            }).stdout.trim()
+          : powershell;
+      if (!exe) {
+        t.skip('pwsh is not installed');
+        return;
+      }
+      const nodeDir = mkdtempSync(join(scratch, 'node-'));
+      const node = join(nodeDir, 'node.exe');
+      copyFileSync(process.execPath, node);
+      const local = mkdtempSync(join(scratch, 'local-'));
+      const bin = join(local, 'bin');
+      const bare = `${nodeDir};${system};${dirname(system)};${dirname(powershell)}`;
+      const result = await run(
+        exe,
+        [
+          '-NoProfile',
+          '-NonInteractive',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-File',
+          installPs1,
+          '-Dir',
+          bin,
+        ],
+        {
+          env: withPath(
+            clean({
+              LOCALAPPDATA: local,
+              SLICC_INSTALL_BASE_URL: release(`gone-${shell}`, version),
+            }),
+            bare
+          ),
+        }
+      );
+      assert.equal(result.status, 0, result.stderr);
+      const ps1 = join(bin, 'scsay.ps1');
+      const launcher = join(bin, 'scsay.cmd');
+      assert.ok(readFileSync(ps1, 'utf8').includes(`'${node}'`));
+      assert.ok(readFileSync(launcher, 'utf8').includes(`"${node}"`));
+      const env = clean({ T_LAUNCHER: ps1 });
+      const callers = [
+        '',
+        "$PSNativeCommandUseErrorActionPreference = $true; $ErrorActionPreference = 'Stop'; ",
+        'trap { continue }; ',
+      ];
+      const show = (name) =>
+        `'${name}=' + $(if ($null -eq $env:${name}) { 'unset' } else { $env:${name} })`;
+      for (const broken of ['not a program', null]) {
+        if (broken === null) rmSync(node);
+        else writeFileSync(node, broken);
+        const how = broken === null ? 'deleted' : 'corrupt';
+        const viaCmd = await batch(`"${launcher}" --version`, env);
+        assert.notEqual(viaCmd.status, 0, `cmd ${how}`);
+        for (const caller of callers) {
+          for (const redirect of ['', ' 2>$null']) {
+            const viaPs = await ps(
+              exe,
+              `${caller}cmd /c exit 0; & $env:T_LAUNCHER --version${redirect}; 'code=' + $LASTEXITCODE; ${show('SCSAY_INSTALL_DIR')}; ${show('NODE_USE_ENV_PROXY')}`,
+              env
+            );
+            assert.deepEqual(
+              lines(viaPs.stdout),
+              ['code=1', 'SCSAY_INSTALL_DIR=unset', 'NODE_USE_ENV_PROXY=unset'],
+              `${how} ${caller}${redirect}: ${viaPs.stderr}`
+            );
+          }
+        }
       }
     });
   }

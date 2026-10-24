@@ -318,6 +318,27 @@ describe('every host command', () => {
     }
   });
 
+  it('still exits 1 when cancelling a failed download rejects', async () => {
+    const real = globalThis.fetch;
+    globalThis.fetch = async () => ({
+      ok: false,
+      status: 500,
+      body: { cancel: () => Promise.reject(new Error('x')) },
+    });
+    try {
+      const r = await run(scplay, {
+        argv: ['--upgrade'],
+        env: { SCPLAY_INSTALL_DIR: '/d', SLICC_INSTALL_BASE_URL: 'http://127.0.0.1:1/r' },
+      });
+      assert.deepEqual(
+        [r.code, r.stderr],
+        [1, 'scplay: could not download http://127.0.0.1:1/r/install.sh: HTTP 500\n']
+      );
+    } finally {
+      globalThis.fetch = real;
+    }
+  });
+
   it(
     'counts --upgrade and --version only as options, not after -- or as a value',
     posix,
