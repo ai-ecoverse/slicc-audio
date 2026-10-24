@@ -157,7 +157,6 @@ try {
       $tar = if ($OnWindows) { Join-Path $env:SystemRoot 'System32\tar.exe' } else { 'tar' }
       & { $ErrorActionPreference = 'Continue'; & $tar -xzf $Tarball -C $Extract --strip-components=1 }
       if ($LASTEXITCODE -ne 0) { Stop-Install "could not unpack $Tgz" }
-      if ($LASTEXITCODE -ne 0) { Stop-Install "could not unpack $Tgz" }
       foreach ($cmd in $Commands) {
         if (-not (Test-Path -LiteralPath (Join-Path (Join-Path $Extract 'host') "$cmd.mjs"))) {
           Stop-Install "$Tgz has no host/$cmd.mjs"
