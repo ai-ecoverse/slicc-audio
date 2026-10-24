@@ -38,6 +38,16 @@ export function fakeServer(state = {}) {
     else if (typeof init.body === 'string') entry.json = JSON.parse(init.body);
     server.requests.push(entry);
     if (server.offline) throw new TypeError('fetch failed');
+    if (server.slow && pathname.startsWith('/v1/audio/') && pathname !== '/v1/audio/voices') {
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(resolve, server.slow);
+        init.signal?.addEventListener('abort', () => {
+          clearTimeout(timer);
+          entry.aborted = true;
+          reject(new DOMException('aborted', 'AbortError'));
+        });
+      });
+    }
     if (server.failure) return json(500, { error: { message: server.failure } });
     const missing = (repo) =>
       json(404, {

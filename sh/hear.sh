@@ -126,8 +126,11 @@ if [ -n "$timeout" ]; then
   fi
   tm=$n
 fi
+if [ -n "$device" ] && [ -z "$given" ] && [ "$choice" = platform ]; then
+  bad "-d: Web Speech can't pick a microphone (-d needs --engine ortllama)"
+fi
 engines=${choice:-ortllama platform}
-if [ -n "$local" ]; then
+if [ -n "$local" ] || [ -n "$device" ]; then
   engines=${engines%platform}
 fi
 h=
@@ -269,7 +272,7 @@ if [ "$engine" = platform ]; then
   [ -n "$any" ] || die "no speech detected"
   exit 0
 fi
-start=$(date +%s)
+start=$(date +%s%3N)
 left=$tm
 while :; do
   num "$left"
@@ -280,7 +283,7 @@ while :; do
   if [ -z "$word" ] || [ -n "$hit" ]; then
     break
   fi
-  left=$((tm - ($(date +%s) - start) * 1000))
+  left=$((tm - ($(date +%s%3N) - start)))
   [ "$left" -gt 0 ] || break
 done
 [ -n "$any" ] || die "no speech detected"

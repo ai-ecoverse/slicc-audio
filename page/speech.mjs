@@ -32,11 +32,11 @@ export function speechOf({ scope }, { kokoroVoice, synth }, { play, speak, webVo
     const voice = await kokoroVoice(options);
     const request = { voice, speed: clamp(options.rate ?? 1, 0.25, 4), response_format: 'wav' };
     if (options.model) request.model = options.model;
-    if (options.output) return convert(await synth(text, request), options.output);
+    if (options.output) return convert(await synth(text, request, signal), options.output);
     const parts = options.interactive ? lines(text) : [text];
     return streamed(async (push) => {
       for (const line of parts) {
-        const wav = await synth(line, request);
+        const wav = await synth(line, request, signal);
         if (options.interactive) push(`${line}\n`);
         await play(wav, {}, signal);
       }

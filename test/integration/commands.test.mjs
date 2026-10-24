@@ -653,6 +653,55 @@ describe('hear', () => {
     }
   });
 
+  it('never records the default microphone when -d names another', async () => {
+    assert.deepEqual(await sh('hear --engine platform -d usb'), {
+      status: 2,
+      stdout: '',
+      stderr: `hear: -d: Web Speech can't pick a microphone (-d needs --engine ortllama)\n${HEAR_USAGE('hear')}`,
+    });
+    world.hear =
+      'ortllama: no server at http://11435.kernel.localhost (x)\nplatform: ready (Web Speech)\n';
+    assert.deepEqual(await sh('hear -n usb'), {
+      status: 1,
+      stdout: '',
+      stderr:
+        'hear: no recognition engine available\n  ortllama: no server at http://11435.kernel.localhost (x)\n',
+    });
+    assert.deepEqual(requests(), []);
+    assert.equal((await sh('hear --engine platform -d usb -i /tmp/clip.wav')).status, 1);
+  });
+
+  it('measures the -x deadline in milliseconds', async () => {
+    const answer = page.answer;
+    page.answer = async (call) => {
+      if (call.kind === 'audio.record') await new Promise((resolve) => setTimeout(resolve, 150));
+      return answer(call);
+    };
+    try {
+      world.transcripts = ['one\n', 'two\n', 'three stop\n'];
+      assert.equal((await sh('hear -x stop -T 600')).stdout, 'one\ntwo\nthree stop\n');
+      const seconds = requests()
+        .filter(([kind]) => kind === 'audio.record')
+        .map(([, options]) => options.seconds);
+      assert.equal(seconds.length, 3, String(seconds));
+      assert.equal(seconds[0], 600);
+      assert.ok(seconds[1] < 600 && seconds[2] < seconds[1], String(seconds));
+      assert.ok(
+        seconds.slice(1).some((n) => !Number.isInteger(n)),
+        `a budget counted in whole seconds: ${seconds}`
+      );
+      page.answer = async (call) => {
+        if (call.kind === 'audio.record') await new Promise((resolve) => setTimeout(resolve, 1200));
+        return answer(call);
+      };
+      world.transcripts = ['go on\n'];
+      assert.equal((await sh('hear -x stop -T 1.1')).stdout, 'go on\n');
+      assert.equal(requests().filter(([kind]) => kind === 'audio.record').length, 1);
+    } finally {
+      page.answer = answer;
+    }
+  });
+
   it('falls back to Web Speech on the microphone, unless --device', async () => {
     world.hear =
       'ortllama: no server at http://11435.kernel.localhost (x)\nplatform: ready (Web Speech)\n';
