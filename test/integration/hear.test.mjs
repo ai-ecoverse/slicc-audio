@@ -7,6 +7,8 @@ import {
   existsSync,
   fakeServer,
   missingModule,
+  onWindows,
+  posix,
   readFileSync,
   run,
   temp,
@@ -37,7 +39,7 @@ function cached(name = 'base') {
 const hf = () => ({ HF_ENDPOINT: `${server.url}/hf` });
 const ollama = () => ({ OLLAMA_HOST: `${server.url}/ollama` });
 
-describe('schear with whisper.cpp', () => {
+describe('schear with whisper.cpp', posix, () => {
   it('converts the file with ffmpeg and transcribes it with whisper-cli', async () => {
     const file = clip();
     const cache = cached();
@@ -202,7 +204,7 @@ describe('schear with whisper.cpp', () => {
 });
 
 describe('schear engines', () => {
-  it('falls back to slicc-ortllama and then to an OpenAI-compatible server', async () => {
+  it('falls back to slicc-ortllama and then to an OpenAI-compatible server', posix, async () => {
     const file = clip();
     server.models.ortllama = ['transcribe'];
     let r = await run(schear, {
@@ -249,7 +251,7 @@ describe('schear engines', () => {
     );
   });
 
-  it('lists every engine, with its hint, when none is available', async () => {
+  it('lists every engine, with its hint, when none is available', posix, async () => {
     const file = clip();
     let r = await run(schear, { argv: ['-i', file], names: [], ortllama: server.ortllama });
     assert.equal(r.code, 1);
@@ -354,7 +356,7 @@ describe('schear engines', () => {
     assert.ok(!server.requests.some((q) => q.tier === 'ollama' && q.route !== '/v1/models'));
   });
 
-  it('uses --engine or SLICC_AUDIO_ENGINE, and checks its arguments', async () => {
+  it('uses --engine or SLICC_AUDIO_ENGINE, and checks its arguments', posix, async () => {
     const file = clip();
     server.models.ortllama = ['transcribe'];
     let r = await run(schear, {
@@ -436,7 +438,7 @@ describe('schear and the microphone', () => {
         ['ffmpeg.exe', 'whisper-cli.exe'],
         ['-f', 'dshow', '-i', 'audio=Line In'],
       ],
-    ]) {
+    ].filter(([platform]) => !onWindows || platform === 'win32')) {
       const r = await run(schear, {
         platform,
         argv: ['-T', '7', ...(extra.argv ?? [])],
@@ -460,61 +462,63 @@ describe('schear and the microphone', () => {
     }
   });
 
-  it('keeps listening across pauses with -x, and says so when nothing was spoken', async () => {
-    const env = {
-      SLICC_AUDIO_CACHE: cached(),
-      FAKE_MIC: 'speech,speech,speech',
-      FAKE_TRANSCRIPT: 'go on',
-    };
-    let r = await run(schear, {
-      argv: ['-x', 'stop'],
-      names: whisper,
-      env: { ...env, FAKE_MIC: 'speech,silence' },
-    });
-    assert.deepEqual([r.code, r.stdout], [0, 'go on\n']);
-    r = await run(schear, {
-      argv: ['-x', 'stop', '-T', '30'],
-      names: whisper,
-      env: { ...env, FAKE_TRANSCRIPT: 'please stop.' },
-    });
-    assert.deepEqual([r.code, r.stdout], [0, 'please stop.\n']);
-    assert.equal(r.calls.filter((c) => c.name === 'ffmpeg').length, 1);
-    r = await run(schear, { names: whisper, env: { ...env, FAKE_MIC: 'silence' } });
-    assert.deepEqual([r.code, r.stderr], [1, 'schear: no speech detected\n']);
-    r = await run(schear, { names: ['whisper-cli'], env });
-    assert.equal(
-      r.stderr,
-      [
-        'schear: no recognition engine available',
-        "  whisper: ffmpeg not found, which records the microphone (your distribution's ffmpeg package)",
-        "  ortllama: ffmpeg not found, which records the microphone (your distribution's ffmpeg package)",
-        "  ollama: ffmpeg not found, which records the microphone (your distribution's ffmpeg package)",
-        '',
-      ].join('\n')
-    );
-    server.models.ortllama = ['transcribe'];
-    r = await run(schear, {
-      names: ['ffmpeg'],
-      ortllama: server.ortllama,
-      env: { FAKE_MIC: 'speech' },
-    });
-    assert.deepEqual([r.code, r.stdout], [0, 'hello from the server\n']);
-    r = await run(schear, { names: whisper, env: { ...env, FAKE_FAIL_ffmpeg: 'no device' } });
-    assert.deepEqual([r.code, r.stderr], [1, 'schear: no device\n']);
-    r = await run(schear, {
-      platform: 'win32',
-      argv: ['--engine', 'whisper'],
-      names: ['ffmpeg.exe', 'whisper-cli.exe'],
-      env: { ...env, FAKE_FAIL_ffmpeg_exe: '' },
-    });
-    assert.equal(r.code, 0);
-  });
+  it(
+    'keeps listening across pauses with -x, and says so when nothing was spoken',
+    posix,
+    async () => {
+      const env = {
+        SLICC_AUDIO_CACHE: cached(),
+        FAKE_MIC: 'speech,speech,speech',
+        FAKE_TRANSCRIPT: 'go on',
+      };
+      let r = await run(schear, {
+        argv: ['-x', 'stop'],
+        names: whisper,
+        env: { ...env, FAKE_MIC: 'speech,silence' },
+      });
+      assert.deepEqual([r.code, r.stdout], [0, 'go on\n']);
+      r = await run(schear, {
+        argv: ['-x', 'stop', '-T', '30'],
+        names: whisper,
+        env: { ...env, FAKE_TRANSCRIPT: 'please stop.' },
+      });
+      assert.deepEqual([r.code, r.stdout], [0, 'please stop.\n']);
+      assert.equal(r.calls.filter((c) => c.name === 'ffmpeg').length, 1);
+      r = await run(schear, { names: whisper, env: { ...env, FAKE_MIC: 'silence' } });
+      assert.deepEqual([r.code, r.stderr], [1, 'schear: no speech detected\n']);
+      r = await run(schear, { names: ['whisper-cli'], env });
+      assert.equal(
+        r.stderr,
+        [
+          'schear: no recognition engine available',
+          "  whisper: ffmpeg not found, which records the microphone (your distribution's ffmpeg package)",
+          "  ortllama: ffmpeg not found, which records the microphone (your distribution's ffmpeg package)",
+          "  ollama: ffmpeg not found, which records the microphone (your distribution's ffmpeg package)",
+          '',
+        ].join('\n')
+      );
+      server.models.ortllama = ['transcribe'];
+      r = await run(schear, {
+        names: ['ffmpeg'],
+        ortllama: server.ortllama,
+        env: { FAKE_MIC: 'speech' },
+      });
+      assert.deepEqual([r.code, r.stdout], [0, 'hello from the server\n']);
+      r = await run(schear, { names: whisper, env: { ...env, FAKE_FAIL_ffmpeg: 'no device' } });
+      assert.deepEqual([r.code, r.stderr], [1, 'schear: no device\n']);
+      r = await run(schear, {
+        platform: 'win32',
+        argv: ['--engine', 'whisper'],
+        names: ['ffmpeg.exe', 'whisper-cli.exe'],
+        env: { ...env, FAKE_FAIL_ffmpeg_exe: '' },
+      });
+      assert.equal(r.code, 0);
+    }
+  );
 
-  it('lists the microphones with -a', async () => {
+  it('lists the microphones with -a', posix, async () => {
     let r = await run(schear, { platform: 'darwin', argv: ['-a'], names: ['ffmpeg'] });
     assert.deepEqual([r.code, r.stdout], [0, '0\tMacBook Pro Microphone\n1\tUSB Mic\n']);
-    r = await run(schear, { platform: 'win32', argv: ['--devices'], names: ['ffmpeg.exe'] });
-    assert.equal(r.stdout, 'Microphone (Realtek)\tMicrophone (Realtek)\nLine In\tLine In\n');
     r = await run(schear, {
       argv: ['--audio-input-devices'],
       names: ['pactl', 'arecord'],
@@ -533,6 +537,11 @@ describe('schear and the microphone', () => {
       [r.code, r.stderr],
       [1, 'schear: ffmpeg not found, which lists the microphones\n']
     );
+  });
+
+  it('lists the dshow microphones with -a on Windows, and records from the first', async () => {
+    let r = await run(schear, { platform: 'win32', argv: ['--devices'], names: ['ffmpeg.exe'] });
+    assert.equal(r.stdout, 'Microphone (Realtek)\tMicrophone (Realtek)\nLine In\tLine In\n');
     r = await run(schear, {
       platform: 'win32',
       argv: [],
@@ -543,7 +552,7 @@ describe('schear and the microphone', () => {
   });
 });
 
-describe('schear --status and --warmup', () => {
+describe('schear --status and --warmup', posix, () => {
   it('reports each engine', async () => {
     const cache = cached();
     server.models = { ortllama: [], ollama: ['w'] };

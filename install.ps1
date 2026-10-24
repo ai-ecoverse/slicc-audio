@@ -198,12 +198,31 @@ try {
     foreach ($cmd in $Commands) {
       $Var = "$($cmd.ToUpperInvariant())_INSTALL_DIR"
       $Entry = Join-Path (Join-Path $BundleDir 'host') "$cmd.mjs"
-      $ps1 = @(
-        "`$env:$Var = $(Get-Quoted $Dir)",
-        "& $(Get-Quoted $Node) $(Get-Quoted $Entry) @args",
-        'exit $LASTEXITCODE',
+      $values = @{ c = $cmd; V = $Var; DIR = (Get-Quoted $Dir); NODE = (Get-Quoted $Node); ENTRY = (Get-Quoted $Entry) }
+      $ps1 = [regex]::Replace((@(
+        '$~c~Previous = $env:~V~',
+        '$env:~V~ = ~DIR~',
+        '$~c~Mode = Get-Variable -Name PSNativeCommandArgumentPassing -ValueOnly -ErrorAction SilentlyContinue',
+        '$~c~Legacy = $PSVersionTable.PSVersion.Major -lt 7 -or "$~c~Mode" -eq ''Legacy'' -or ($null -eq $~c~Mode -and $PSVersionTable.PSVersion.Major -eq 7 -and $PSVersionTable.PSVersion.Minor -lt 3)',
+        '$~c~Args = @(foreach ($~c~Arg in $args) { foreach ($~c~Item in @($~c~Arg)) {',
+        '  $~c~Text = "$~c~Item"',
+        '  if (-not $~c~Legacy) { $~c~Text }',
+        '  elseif ($~c~Text -eq '''') { ''""'' }',
+        '  else {',
+        '    $~c~Text = $~c~Text -replace ''(\\*)"'', ''$1$1\"''',
+        '    if ($PSVersionTable.PSEdition -ne ''Core'' -and $~c~Text -match ''\s'') { $~c~Text -replace ''(\\+)$'', ''$1$1'' } else { $~c~Text }',
+        '  }',
+        '} })',
+        '$~c~Status = 1',
+        'try {',
+        '  & ~NODE~ ~ENTRY~ @~c~Args',
+        '  $~c~Status = $LASTEXITCODE',
+        '} finally {',
+        '  if ($null -eq $~c~Previous) { Remove-Item -LiteralPath Env:~V~ -ErrorAction SilentlyContinue } else { $env:~V~ = $~c~Previous }',
+        '}',
+        'exit $~c~Status',
         ''
-      ) -join "`r`n"
+      ) -join "`r`n"), '~(\w+)~', { param($m) $values[$m.Groups[1].Value] })
       [System.IO.File]::WriteAllText((Join-Path $Dir "$cmd.ps1"), $ps1, (New-Object System.Text.UTF8Encoding $true))
       $cmdLines = @(
         '@echo off',
@@ -211,11 +230,7 @@ try {
         'for /f "tokens=2 delims=:." %%c in (''chcp'') do set "SLICC_AUDIO_CP=%%c"',
         'chcp 65001 >nul',
         "set `"$Var=$(& $escape $Dir)`"",
-        '(',
-        "`"$(& $escape $Node)`" `"$(& $escape $Entry)`" %*",
-        'call :done %%ERRORLEVEL%%',
-        'exit /b',
-        ')',
+        "`"$(& $escape $Node)`" `"$(& $escape $Entry)`" %* & call :done %%ERRORLEVEL%% & call exit /b %%ERRORLEVEL%%",
         ':done',
         'chcp %SLICC_AUDIO_CP% >nul',
         'exit /b %1',
