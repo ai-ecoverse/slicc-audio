@@ -13,6 +13,7 @@ export function ortllamaOf({ scope, base }) {
       return { offline: true };
     }
     const bytes = new Uint8Array(await res.arrayBuffer());
+    if (res.status === 502) return { offline: true };
     let message = '';
     if (!res.ok) {
       message = decode(bytes);
@@ -48,7 +49,7 @@ export function ortllamaOf({ scope, base }) {
   }
 
   const probes = {
-    speech: (model) => speech({ model: model ?? 'speech', input: ' ', response_format: 'wav' }),
+    speech: (model) => speech({ model: model ?? 'speech', input: 'a', response_format: 'wav' }),
     transcribe: (model) =>
       transcription(wav16(new Float32Array(1600), 16000), {
         model: model ?? 'transcribe',
@@ -66,6 +67,7 @@ export function ortllamaOf({ scope, base }) {
     const res = await probes[role](model);
     if (res.offline) return { why: offline };
     if (res.status === 404) return { missing: hint(res.message) };
+    if (!res.ok) return { why: `not ready (${res.message || `HTTP ${res.status}`})` };
     return { ready: wanted };
   }
 

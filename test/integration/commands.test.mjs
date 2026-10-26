@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import { after, before, beforeEach, describe, it } from 'node:test';
+import { createAudio } from '@ai-ecoverse/slicc-audio/page';
+import { fakeBrowser, fakeServer, tone } from './browser.mjs';
 import { boot, bootOld, fakePage, pkg } from './kernel.mjs';
 
 const SAY_READY =
@@ -1038,5 +1040,86 @@ describe('next to npm bins', () => {
     } finally {
       await tool.close();
     }
+  });
+});
+
+describe('when seven answers 502 because slicc-ortllama is not running', () => {
+  const offline =
+    'ortllama: no server at http://11435.kernel.localhost (pnpm add -g @ai-ecoverse/slicc-ortllama, then ortllama serve --detach)';
+  let seven;
+  let browser;
+
+  before(async () => {
+    browser = fakeBrowser({ server: fakeServer({ gateway: true }) });
+    seven = await boot({
+      requests: createAudio({ scope: browser.scope, silence: 40, tick: 5, wait: 20 }),
+    });
+    await seven.kernel.writeFile('/tmp/in.wav', tone());
+  });
+
+  after(() => seven.close());
+
+  beforeEach(() => {
+    browser.log.length = 0;
+    browser.server.requests.length = 0;
+  });
+
+  it('say falls back to Web Speech and speaks', async () => {
+    assert.deepEqual(await seven.sh('say hello'), { status: 0, stdout: '', stderr: '' });
+    assert.ok(browser.log.some(([what, text]) => what === 'speak' && text === 'hello'));
+    assert.ok(browser.server.requests.every((r) => r.path === '/v1/models'));
+  });
+
+  it('say --status shows ortllama offline with the install hint', async () => {
+    assert.deepEqual(await seven.sh('say --status'), {
+      status: 0,
+      stdout: `${offline}\nplatform: ready (Web Speech, 3 voices)\n`,
+      stderr: '',
+    });
+  });
+
+  it('say --engine ortllama and say -o fail with the offline message', async () => {
+    const none = {
+      status: 1,
+      stdout: '',
+      stderr: `say: no speech engine available\n  ${offline}\n`,
+    };
+    assert.deepEqual(await seven.sh('say --engine ortllama hello'), none);
+    assert.deepEqual(await seven.sh('say -o /tmp/out.wav hello'), none);
+    assert.deepEqual(await seven.sh('say --warmup'), {
+      status: 1,
+      stdout: '',
+      stderr: `say: ${offline}\n`,
+    });
+    assert.equal(browser.log.length, 0);
+  });
+
+  it('hear falls back to Web Speech, and shows ortllama offline', async () => {
+    assert.deepEqual(await seven.sh('hear -T 5'), {
+      status: 0,
+      stdout: 'hello world\n',
+      stderr: '',
+    });
+    assert.ok(browser.log.some(([what]) => what === 'recognition'));
+    assert.deepEqual(await seven.sh('hear --status'), {
+      status: 0,
+      stdout: `${offline}\nplatform: ready (Web Speech)\n`,
+      stderr: '',
+    });
+  });
+
+  it('hear --engine ortllama and hear -i fail with the offline message', async () => {
+    const none = {
+      status: 1,
+      stdout: '',
+      stderr: `hear: no recognition engine available\n  ${offline}\n`,
+    };
+    assert.deepEqual(await seven.sh('hear --engine ortllama'), none);
+    assert.deepEqual(await seven.sh('hear -i /tmp/in.wav'), none);
+    assert.deepEqual(await seven.sh('hear --warmup'), {
+      status: 1,
+      stdout: '',
+      stderr: `hear: ${offline}\n`,
+    });
   });
 });
