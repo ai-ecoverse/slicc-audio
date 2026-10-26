@@ -277,7 +277,7 @@ describe('audio.say', () => {
     dropped.models = [];
     assert.match(await flaky.text('audio.say', { status: true }), /^ortllama: no server at/);
     const broken = page({ server: fakeServer({ failure: 'boom' }) });
-    assert.match(await broken.text('audio.say', { status: true }), /^ortllama: ready \(speech\)/);
+    assert.match(await broken.text('audio.say', { status: true }), /^ortllama: not ready \(boom\)/);
   });
 
   it('speaks through Kokoro and plays the WAV', async () => {
@@ -423,11 +423,11 @@ describe('audio.say', () => {
       message: /^no server at/,
     });
     const bad = page();
-    bad.scope.fetch = async () => new Response('', { status: 502 });
+    bad.scope.fetch = async () => new Response('', { status: 503 });
     await assert.rejects(
       bad.ask('audio.say', { engine: 'kokoro', output: { format: 'WAVE' } }, 'x'),
       {
-        message: 'HTTP 502',
+        message: 'HTTP 503',
       }
     );
   });
@@ -888,6 +888,99 @@ describe('audio.transcribe', () => {
       ''
     );
     assert.deepEqual(q.log, [['recognition']]);
+  });
+});
+
+const NO_SERVER =
+  'no server at http://11435.kernel.localhost (pnpm add -g @ai-ecoverse/slicc-ortllama, then ortllama serve --detach)';
+
+describe('when seven answers 502 because nothing listens on the kernel port', () => {
+  const gateway = (options = {}) => page({ server: fakeServer({ gateway: true }), ...options });
+
+  it('reports ortllama offline, with the install hint, for say and hear', async () => {
+    assert.equal(
+      await gateway().text('audio.say', { status: true }),
+      `ortllama: ${NO_SERVER}\nplatform: ready (Web Speech, 3 voices)\n`
+    );
+    assert.equal(
+      await gateway().text('audio.transcribe', { status: true, model: 'x/y' }),
+      `ortllama: ${NO_SERVER}\nplatform: ready (Web Speech)\n`
+    );
+  });
+
+  it('fails every ortllama request with the offline message', async () => {
+    const p = gateway();
+    await assert.rejects(p.ask('audio.say', { engine: 'kokoro' }, 'hello'), { message: NO_SERVER });
+    await assert.rejects(
+      p.ask('audio.say', { engine: 'kokoro', output: { format: 'WAVE' } }, 'hello'),
+      { message: NO_SERVER }
+    );
+    await assert.rejects(p.ask('audio.voices', {}), { message: NO_SERVER });
+    await assert.rejects(p.ask('audio.say', { engine: 'kokoro', voice: 'emma' }, 'hi'), {
+      message: NO_SERVER,
+    });
+    await assert.rejects(p.ask('audio.transcribe', { engine: 'whisper' }, tone()), {
+      message: NO_SERVER,
+    });
+    await refusal(
+      p.ask('audio.say', { warmup: true }),
+      'NotSupportedError',
+      `ortllama: ${NO_SERVER}`
+    );
+    await refusal(
+      p.ask('audio.transcribe', { warmup: true }),
+      'NotSupportedError',
+      `ortllama: ${NO_SERVER}`
+    );
+  });
+});
+
+describe('ortllama readiness', () => {
+  it('is never ready on a server error, and names it', async () => {
+    for (const status of [500, 503, 504]) {
+      const p = page({ server: fakeServer({ failure: 'busy', status }) });
+      assert.match(await p.text('audio.say', { status: true }), /^ortllama: not ready \(busy\)\n/);
+      assert.match(
+        await p.text('audio.transcribe', { status: true }),
+        /^ortllama: not ready \(busy\)\n/
+      );
+      await refusal(
+        p.ask('audio.say', { warmup: true }),
+        'NotSupportedError',
+        'ortllama: not ready (busy)'
+      );
+      await assert.rejects(p.ask('audio.say', { engine: 'kokoro' }, 'hi'), { message: 'busy' });
+    }
+    const bare = page({ server: fakeServer({ models: [] }) });
+    bare.scope.fetch = async (url, init) =>
+      new URL(url).pathname === '/v1/models'
+        ? bare.server.fetch(url, init)
+        : new Response('', { status: 503 });
+    assert.match(
+      await bare.text('audio.say', { status: true }),
+      /^ortllama: not ready \(HTTP 503\)\n/
+    );
+  });
+
+  it('probes with text a real slicc-ortllama accepts, so a missing model reads as not cached', async () => {
+    const p = page({ server: fakeServer({ cached: false }) });
+    assert.match(
+      await p.text('audio.say', { status: true }),
+      /^ortllama: not cached \(hf download/
+    );
+    const probe = p.server.requests.find((r) => r.path === '/v1/audio/speech');
+    assert.ok(probe.json.input.trim());
+    const other = page({ server: fakeServer({ models: [] }) });
+    other.scope.fetch = async (url, init) =>
+      new URL(url).pathname === '/v1/audio/speech'
+        ? new Response(JSON.stringify({ error: { message: 'model x/y does not speak' } }), {
+            status: 400,
+          })
+        : other.server.fetch(url, init);
+    assert.equal(
+      (await other.text('audio.say', { status: true, model: 'x/y' })).split('\n')[0],
+      'ortllama: not ready (model x/y does not speak)'
+    );
   });
 });
 

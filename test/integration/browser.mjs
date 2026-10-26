@@ -29,6 +29,8 @@ export function fakeServer(state = {}) {
       { start: 1.2, end: 3, text: ' General Kenobi.' },
     ],
     failure: undefined,
+    status: 500,
+    gateway: false,
     ...state,
   };
   server.fetch = async (url, init = {}) => {
@@ -48,7 +50,13 @@ export function fakeServer(state = {}) {
         });
       });
     }
-    if (server.failure) return json(500, { error: { message: server.failure } });
+    if (server.gateway) {
+      return new Response('sw: nothing listening on kernel port 11435', {
+        status: 502,
+        headers: { 'content-type': 'text/plain' },
+      });
+    }
+    if (server.failure) return json(server.status, { error: { message: server.failure } });
     const missing = (repo) =>
       json(404, {
         error: { message: `model not cached; run: hf download ${repo} --include '*.json'` },
@@ -61,6 +69,9 @@ export function fakeServer(state = {}) {
       return json(200, { object: 'list', data: server.voices });
     }
     if (pathname === '/v1/audio/speech') {
+      if (!entry.json?.input?.trim()) {
+        return json(400, { error: { message: 'input must be a non-empty string' } });
+      }
       if (!server.cached) return missing('onnx-community/Kokoro-82M-v1.0-ONNX');
       return new Response(tone(), { headers: { 'content-type': 'audio/wav' } });
     }
