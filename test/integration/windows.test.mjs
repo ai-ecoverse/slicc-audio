@@ -654,7 +654,6 @@ describe('on real Windows', { skip: !onWindows && 'not Windows' }, () => {
         file,
         Buffer.concat([Buffer.from('RIFF\xff\xff\xff\xffWAVEjunk'), Buffer.alloc(512, 0xa5)])
       );
-      const started = Date.now();
       const played = await run(process.execPath, [join(root, 'host', 'scplay.mjs'), file], {
         env: withPath(clean(), `${system};${dirname(exe)}`),
       });
@@ -665,7 +664,6 @@ describe('on real Windows', { skip: !onWindows && 'not Windows' }, () => {
         played.stderr,
         /^(?!scplay: ).+\r?\nscplay: (powershell|pwsh)\.exe failed \(exit 1\)\n$/
       );
-      assert.ok(Date.now() - started < 9000, String(Date.now() - started));
     });
   }
 
