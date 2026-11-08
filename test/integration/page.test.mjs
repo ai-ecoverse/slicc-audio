@@ -644,8 +644,11 @@ describe('audio.record', () => {
     const gone = new AbortController();
     gone.abort();
     assert.equal(await before.text('audio.record', {}, undefined, gone.signal), '');
-    assert.ok(!before.log.some(([what]) => what === 'record'));
-    assert.ok(before.log.some(([what]) => what === 'track stop'));
+    assert.equal(
+      await before.text('audio.record', { gate: false, devices: true }, undefined, gone.signal),
+      ''
+    );
+    assert.deepEqual(before.log, []);
     const mic = page({ micDelay: 30 });
     const during = new AbortController();
     setTimeout(() => during.abort(), 5);
@@ -836,6 +839,24 @@ describe('audio.record', () => {
     let size = 0;
     for await (const chunk of kept) size += chunk.length;
     assert.ok(size > 64 * 1024 * 1024, String(size));
+  });
+
+  it('stops the tracks when the signal it was given cannot be combined', async () => {
+    for (const options of [{}, { gate: false }]) {
+      const p = page();
+      const odd = { aborted: false, addEventListener() {}, removeEventListener() {} };
+      const reply = await p.audio.handle({
+        kind: 'audio.record',
+        options,
+        body: body(''),
+        signal: odd,
+      });
+      await assert.rejects(read(reply), { name: 'TypeError' });
+      assert.deepEqual(
+        p.log.map(([what]) => what),
+        ['getUserMedia', 'track stop']
+      );
+    }
   });
 
   it('refuses a gate that is not a boolean before it opens the microphone', async () => {

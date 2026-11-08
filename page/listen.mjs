@@ -101,12 +101,14 @@ export function listenOf({ scope, silence, tick, threshold }, { context }) {
     for (const track of stream.getTracks()) track.stop();
   };
 
-  async function capture(stream, options, signal, push) {
+  async function capture(stream, options, signals, push) {
     const gated = options.gate !== false;
     const type = 'audio/webm;codecs=opus';
+    let signal = signals[0];
     let recorder;
     let ctx;
     try {
+      signal = AbortSignal.any(signals);
       if (signal.aborted) return;
       recorder = new scope.MediaRecorder(
         stream,

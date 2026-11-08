@@ -66,13 +66,11 @@ export function createAudio({
       await drain(body);
       if (options.gate !== undefined && typeof options.gate !== 'boolean')
         throw new TypeError('invalid gate');
+      if (signal.aborted) return '';
       const stream = await microphone(options);
       if (typeof stream === 'string') return stream;
       const limit = options.gate === false ? MAX_UNREAD : undefined;
-      return streamed(
-        (push, closed) => capture(stream, options, AbortSignal.any([signal, closed]), push),
-        limit
-      );
+      return streamed((push, closed) => capture(stream, options, [signal, closed], push), limit);
     },
     async 'audio.transcribe'({ options, body, signal }) {
       const bytes = await drain(body);
