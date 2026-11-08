@@ -2,7 +2,7 @@ import { listenOf } from './listen.mjs';
 import { ortllamaOf } from './ortllama.mjs';
 import { soundOf } from './sound.mjs';
 import { speechOf } from './speech.mjs';
-import { decode, drain, KINDS, LANGUAGES, named, ORTLLAMA, streamed } from './util.mjs';
+import { decode, drain, KINDS, LANGUAGES, MAX_UNREAD, named, ORTLLAMA, streamed } from './util.mjs';
 import { chime, sniff } from './wav.mjs';
 
 export { drain, ORTLLAMA, streamed } from './util.mjs';
@@ -64,9 +64,13 @@ export function createAudio({
     },
     async 'audio.record'({ options, body, signal }) {
       await drain(body);
+      if (options.gate !== undefined && typeof options.gate !== 'boolean')
+        throw new TypeError('invalid gate');
+      if (signal.aborted) return '';
       const stream = await microphone(options);
       if (typeof stream === 'string') return stream;
-      return streamed((push) => capture(stream, options, signal, push));
+      const limit = options.gate === false ? MAX_UNREAD : undefined;
+      return streamed((push, closed) => capture(stream, options, [signal, closed], push), limit);
     },
     async 'audio.transcribe'({ options, body, signal }) {
       const bytes = await drain(body);

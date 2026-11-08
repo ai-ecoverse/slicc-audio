@@ -42,8 +42,25 @@ function page(options = {}, settings = {}) {
     );
   const text = async (...args) => (await ask(...args)).toString();
   const { scope, log, server, contexts, options: settled } = browser;
-  return { scope, log, server, contexts, options: settled, audio: a, ask, text };
+  return {
+    scope,
+    log,
+    server,
+    contexts,
+    recorders: browser.recorders,
+    options: settled,
+    audio: a,
+    ask,
+    text,
+  };
 }
+
+async function until(done) {
+  for (let i = 0; i < 400 && !done(); i++) await new Promise((r) => setTimeout(r, 5));
+  assert.ok(done());
+}
+
+const stoppedAt = (log) => log.indexOf(log.find(([what]) => what === 'stopped'));
 
 async function refusal(promise, name, message) {
   await assert.rejects(promise, (error) => {
@@ -627,8 +644,11 @@ describe('audio.record', () => {
     const gone = new AbortController();
     gone.abort();
     assert.equal(await before.text('audio.record', {}, undefined, gone.signal), '');
-    assert.ok(!before.log.some(([what]) => what === 'record'));
-    assert.ok(before.log.some(([what]) => what === 'track stop'));
+    assert.equal(
+      await before.text('audio.record', { gate: false, devices: true }, undefined, gone.signal),
+      ''
+    );
+    assert.deepEqual(before.log, []);
     const mic = page({ micDelay: 30 });
     const during = new AbortController();
     setTimeout(() => during.abort(), 5);
@@ -718,6 +738,136 @@ describe('audio.record', () => {
       throw 'odd';
     };
     await assert.rejects(odd.ask('audio.record', {}), { message: 'odd' });
+  });
+
+  it('records from the first chunk with gate: false, through silence and pauses, with no analyser', async () => {
+    const p = page({ level: () => 0 });
+    const out = await p.text('audio.record', { gate: false, pause: true, seconds: 0.06 });
+    assert.match(out, /^\[1\]\[2\]\[3\]/);
+    assert.equal(p.contexts.length, 0);
+    assert.deepEqual(p.log[1], ['recorder', 'audio/webm;codecs=opus']);
+    assert.ok(p.log.some(([what]) => what === 'recorder stop'));
+    assert.ok(p.log.indexOf(p.log.find(([what]) => what === 'track stop')) < stoppedAt(p.log));
+    const gated = page({ level: () => 0 });
+    assert.equal(await gated.text('audio.record', { gate: true, seconds: 0.05 }), '');
+    assert.equal(gated.contexts.length, 1);
+  });
+
+  it('sets no timer with gate: false and no seconds, and stops only when the signal aborts', async () => {
+    const delays = [];
+    const real = globalThis.setTimeout;
+    globalThis.setTimeout = (fn, ms, ...rest) => {
+      delays.push(ms);
+      return real(fn, ms, ...rest);
+    };
+    try {
+      const p = page();
+      const stop = new AbortController();
+      real(() => stop.abort(), 80);
+      const out = await p.text('audio.record', { gate: false }, undefined, stop.signal);
+      assert.match(out, /^\[1\]\[2\]\[3\]/);
+      assert.ok(!delays.some((ms) => ms >= 1000), String(delays));
+      assert.ok(p.log.some(([what]) => what === 'recorder stop'));
+      assert.ok(p.log.indexOf(p.log.find(([what]) => what === 'track stop')) < stoppedAt(p.log));
+      delays.length = 0;
+      const again = new AbortController();
+      real(() => again.abort(), 20);
+      assert.equal(await page().text('audio.record', {}, undefined, again.signal), '');
+      assert.ok(delays.includes(30000), String(delays));
+    } finally {
+      globalThis.setTimeout = real;
+    }
+  });
+
+  it('stops the recorder and every track when the reply is closed', async () => {
+    for (const options of [{ gate: false }, { gate: false, seconds: 30 }, { seconds: 30 }]) {
+      const browser = fakeBrowser({ level: () => 0.5 });
+      const a = createAudio({ scope: browser.scope, silence: 40, tick: 5 });
+      const reply = await a.handle({
+        kind: 'audio.record',
+        options,
+        body: body(''),
+        signal: new AbortController().signal,
+      });
+      const reader = reply.getReader();
+      assert.match(new TextDecoder().decode((await reader.read()).value), /^\[1\]/);
+      await reader.cancel();
+      await until(() => browser.log.some(([what]) => what === 'stopped'));
+      assert.ok(browser.log.some(([what]) => what === 'recorder stop'));
+      assert.ok(browser.log.some(([what]) => what === 'track stop'));
+      assert.ok(
+        browser.log.indexOf(browser.log.find(([what]) => what === 'track stop')) <
+          stoppedAt(browser.log)
+      );
+    }
+  });
+
+  it('ends the reply when the browser stops the recorder because the track ended', async () => {
+    const p = page();
+    const reply = p.text('audio.record', { gate: false });
+    await until(() => p.recorders[0]?.count >= 2);
+    p.recorders[0].stop();
+    assert.match(await reply, /^\[1\]\[2\]/);
+    assert.ok(p.log.some(([what]) => what === 'track stop'));
+  });
+
+  it('errors the stream and stops the tracks past 64 MiB the program has not read', async () => {
+    const browser = fakeBrowser({ chunkBytes: 9 * 1024 * 1024 });
+    const a = createAudio({ scope: browser.scope });
+    const reply = await a.handle({
+      kind: 'audio.record',
+      options: { gate: false },
+      body: body(''),
+      signal: new AbortController().signal,
+    });
+    await until(() => browser.log.some(([what]) => what === 'stopped'));
+    assert.ok(browser.recorders[0].count > 7);
+    assert.ok(browser.log.some(([what]) => what === 'track stop'));
+    await assert.rejects(reply.getReader().read(), {
+      name: 'Error',
+      message: 'the program reads too slowly',
+    });
+    const read = fakeBrowser({ chunkBytes: 9 * 1024 * 1024 });
+    const stop = new AbortController();
+    setTimeout(() => stop.abort(), 150);
+    const kept = await createAudio({ scope: read.scope }).handle({
+      kind: 'audio.record',
+      options: { gate: false },
+      body: body(''),
+      signal: stop.signal,
+    });
+    let size = 0;
+    for await (const chunk of kept) size += chunk.length;
+    assert.ok(size > 64 * 1024 * 1024, String(size));
+  });
+
+  it('stops the tracks when the signal it was given cannot be combined', async () => {
+    for (const options of [{}, { gate: false }]) {
+      const p = page();
+      const odd = { aborted: false, addEventListener() {}, removeEventListener() {} };
+      const reply = await p.audio.handle({
+        kind: 'audio.record',
+        options,
+        body: body(''),
+        signal: odd,
+      });
+      await assert.rejects(read(reply), { name: 'TypeError' });
+      assert.deepEqual(
+        p.log.map(([what]) => what),
+        ['getUserMedia', 'track stop']
+      );
+    }
+  });
+
+  it('refuses a gate that is not a boolean before it opens the microphone', async () => {
+    for (const gate of ['false', 0, null]) {
+      const p = page();
+      await assert.rejects(p.ask('audio.record', { gate }), {
+        name: 'TypeError',
+        message: 'invalid gate',
+      });
+      assert.deepEqual(p.log, []);
+    }
   });
 });
 
@@ -1057,6 +1207,23 @@ describe('behind the real /dev/embedder', () => {
         (await os.sh('hear --engine ortllama')).stderr,
         'hear: microphone permission denied\n'
       );
+      browser.options.micError = undefined;
+      browser.options.level = () => 0;
+      browser.log.length = 0;
+      const raw = await os.sh(
+        `exec 3<>/dev/embedder; printf '%s\\n' '{"kind":"audio.record","gate":false,"seconds":0.05}' >&3; cat <&3`
+      );
+      assert.equal(raw.status, 0, raw.stderr);
+      assert.match(raw.stdout, /^\[1\]\[2\]/);
+      assert.ok(browser.log.some(([what]) => what === 'track stop'));
+      const odd = await os.sh(
+        `exec 3<>/dev/embedder; printf '%s\\n' '{"kind":"audio.record","gate":"no"}' >&3; cat <&3`
+      );
+      assert.deepEqual(odd, {
+        status: 1,
+        stdout: '',
+        stderr: 'cat: /dev/embedder: invalid gate\ncat: -: I/O error\n',
+      });
     } finally {
       await os.close();
     }

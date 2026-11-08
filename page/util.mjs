@@ -1,6 +1,7 @@
 export const ORTLLAMA = 'http://11435.kernel.localhost';
 export const MAX_BODY = 64 * 1024 * 1024;
 export const MAX_INPUT = 4096;
+export const MAX_UNREAD = 64 * 1024 * 1024;
 export const KINDS = [
   'audio.play',
   'audio.say',
@@ -50,28 +51,44 @@ export async function drain(body, limit = MAX_BODY) {
   return out;
 }
 
-export function streamed(work) {
+export function streamed(work, limit) {
   let open = true;
-  return new ReadableStream({
-    start(controller) {
-      const push = (chunk) => {
-        if (open) controller.enqueue(typeof chunk === 'string' ? encoder.encode(chunk) : chunk);
-      };
-      work(push).then(
-        () => {
-          if (open) controller.close();
-          open = false;
-        },
-        (error) => {
-          if (open) controller.error(error);
-          open = false;
-        }
-      );
+  const closed = new AbortController();
+  const end = (reason) => {
+    open = false;
+    closed.abort(reason);
+  };
+  return new ReadableStream(
+    {
+      start(controller) {
+        const push = (chunk) => {
+          if (!open) return;
+          const bytes = typeof chunk === 'string' ? encoder.encode(chunk) : chunk;
+          if (limit && bytes.length > controller.desiredSize) {
+            const error = new Error('the program reads too slowly');
+            controller.error(error);
+            end(error);
+            return;
+          }
+          controller.enqueue(bytes);
+        };
+        work(push, closed.signal).then(
+          () => {
+            if (open) controller.close();
+            open = false;
+          },
+          (error) => {
+            if (open) controller.error(error);
+            open = false;
+          }
+        );
+      },
+      cancel(reason) {
+        end(reason);
+      },
     },
-    cancel() {
-      open = false;
-    },
-  });
+    limit ? new ByteLengthQueuingStrategy({ highWaterMark: limit }) : undefined
+  );
 }
 
 export function words(command) {

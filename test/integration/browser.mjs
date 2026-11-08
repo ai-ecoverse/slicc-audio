@@ -269,6 +269,7 @@ export function fakeBrowser(options = {}) {
       log.push(['recognition abort']);
     }
   }
+  const recorders = [];
   class MediaRecorder {
     static isTypeSupported(type) {
       return !o.noOpus && type === 'audio/webm;codecs=opus';
@@ -279,11 +280,14 @@ export function fakeBrowser(options = {}) {
       this.init = init;
       this.state = 'inactive';
       this.count = 0;
+      recorders.push(this);
       log.push(['recorder', init?.mimeType]);
     }
     chunk() {
       this.count += 1;
-      const bytes = new TextEncoder().encode(`[${this.count}]`);
+      const bytes = o.chunkBytes
+        ? new Uint8Array(o.chunkBytes)
+        : new TextEncoder().encode(`[${this.count}]`);
       this.ondataavailable({ data: new Blob([bytes]) });
     }
     start(slice) {
@@ -297,7 +301,10 @@ export function fakeBrowser(options = {}) {
       this.state = 'inactive';
       this.chunk();
       log.push(['recorder stop']);
-      setTimeout(() => this.onstop(), 1);
+      setTimeout(() => {
+        log.push(['stopped']);
+        this.onstop();
+      }, 1);
     }
   }
   const tracks = [];
@@ -347,5 +354,5 @@ export function fakeBrowser(options = {}) {
     delete scope.SpeechRecognition;
   }
   if (o.noMic) scope.navigator = {};
-  return { scope, log, server, contexts, tracks, listeners, options: o };
+  return { scope, log, server, contexts, tracks, recorders, listeners, options: o };
 }
