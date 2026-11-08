@@ -102,6 +102,7 @@ export function listenOf({ scope, silence, tick, threshold }, { context }) {
   };
 
   async function capture(stream, options, signal, push) {
+    const gated = options.gate !== false;
     const type = 'audio/webm;codecs=opus';
     let recorder;
     let ctx;
@@ -111,7 +112,7 @@ export function listenOf({ scope, silence, tick, threshold }, { context }) {
         stream,
         scope.MediaRecorder.isTypeSupported?.(type) ? { mimeType: type } : undefined
       );
-      ctx = await context();
+      if (gated) ctx = await context();
     } catch (error) {
       release(stream);
       throw error;
@@ -122,17 +123,12 @@ export function listenOf({ scope, silence, tick, threshold }, { context }) {
       }
     }
     if (signal.aborted) return;
-    const analyser = ctx.createAnalyser();
-    analyser.fftSize = 2048;
-    ctx.createMediaStreamSource(stream).connect(analyser);
-    const frame = new Float32Array(analyser.fftSize);
     let chain = Promise.resolve();
-    let flowing = false;
-    let speaking = false;
-    let quiet = 0;
+    let flowing = !gated;
     let held = [];
     const stop = () => {
       if (recorder.state !== 'inactive') recorder.stop();
+      release(stream);
     };
     const stopped = new Promise((resolve) => {
       recorder.onstop = resolve;
@@ -145,24 +141,18 @@ export function listenOf({ scope, silence, tick, threshold }, { context }) {
         else held.push(bytes);
       });
     };
-    const meter = setInterval(() => {
-      analyser.getFloatTimeDomainData(frame);
-      let sum = 0;
-      for (const s of frame) sum += s * s;
-      const now = Date.now();
-      if (Math.sqrt(sum / frame.length) > threshold) {
-        if (!speaking) {
-          speaking = true;
-          chain = chain.then(() => {
-            flowing = true;
-            for (const bytes of held) push(bytes);
-            held = [];
-          });
-        }
-        quiet = now;
-      } else if (speaking && options.pause && now - quiet >= silence) stop();
-    }, tick);
-    const timer = setTimeout(stop, (options.seconds ?? 30) * 1000);
+    const speak = () => {
+      chain = chain.then(() => {
+        flowing = true;
+        for (const bytes of held) push(bytes);
+        held = [];
+      });
+    };
+    const meter = gated
+      ? listen(ctx, stream, { silence, tick, threshold, pause: options.pause }, speak, stop)
+      : undefined;
+    const seconds = options.seconds ?? (gated ? 30 : undefined);
+    const timer = seconds === undefined ? undefined : setTimeout(stop, seconds * 1000);
     signal.addEventListener('abort', stop, { once: true });
     try {
       recorder.start(250);
@@ -173,9 +163,31 @@ export function listenOf({ scope, silence, tick, threshold }, { context }) {
       clearTimeout(timer);
       signal.removeEventListener('abort', stop);
       release(stream);
-      await ctx.close();
+      await ctx?.close();
     }
   }
 
   return { capture, microphone, recognize, transcript };
+}
+
+function listen(ctx, stream, { silence, tick, threshold, pause }, speak, stop) {
+  const analyser = ctx.createAnalyser();
+  analyser.fftSize = 2048;
+  ctx.createMediaStreamSource(stream).connect(analyser);
+  const frame = new Float32Array(analyser.fftSize);
+  let speaking = false;
+  let quiet = 0;
+  return setInterval(() => {
+    analyser.getFloatTimeDomainData(frame);
+    let sum = 0;
+    for (const s of frame) sum += s * s;
+    const now = Date.now();
+    if (Math.sqrt(sum / frame.length) > threshold) {
+      if (!speaking) {
+        speaking = true;
+        speak();
+      }
+      quiet = now;
+    } else if (speaking && pause && now - quiet >= silence) stop();
+  }, tick);
 }
